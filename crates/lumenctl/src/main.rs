@@ -84,6 +84,15 @@ enum Cmd {
         /// Size of the plot on the graph layout, 0.6 to 1.5 (default 1.0).
         #[arg(long)]
         graph_scale: Option<f32>,
+        /// Image or GIF behind every layout, or `wallpaper` for the current Omarchy wallpaper.
+        #[arg(long, conflicts_with = "no_background")]
+        background: Option<String>,
+        /// Remove the background image.
+        #[arg(long)]
+        no_background: bool,
+        /// How much to dim the background toward the theme color, 0-100 (default 55).
+        #[arg(long)]
+        dim: Option<u8>,
     },
     /// Re-read config.toml and the Omarchy theme.
     Reload,
@@ -224,7 +233,7 @@ fn main() -> anyhow::Result<()> {
             };
             client.request(&Request::SetFan { target, fan })?;
         }
-        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval, graph_scale } => {
+        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval, graph_scale, background, no_background, dim } => {
             let mut lcd = client.status()?.active.lcd;
             if let Some(m) = mode {
                 lcd.mode = m.into();
@@ -257,6 +266,19 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(secs) = interval {
                 lcd.cycle_seconds = secs.max(1);
+            }
+            if let Some(bg) = background {
+                lcd.background = Some(if bg == lumen_ipc::WALLPAPER {
+                    bg
+                } else {
+                    std::fs::canonicalize(&bg).with_context(|| format!("background {bg}"))?.to_string_lossy().into_owned()
+                });
+            }
+            if no_background {
+                lcd.background = None;
+            }
+            if let Some(d) = dim {
+                lcd.background_dim = d.min(100);
             }
             if let Some(scale) = graph_scale {
                 lcd.graph_scale = scale.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
@@ -306,6 +328,9 @@ fn print_status(st: &Status) {
                     "LCD  {:?}  brightness {}%  rotation {}°  graph scale {:.1}×",
                     lcd.mode, lcd.brightness, lcd.rotation, lcd.graph_scale
                 );
+                if let Some(bg) = &lcd.background {
+                    println!("     background {bg} (dim {}%)", lcd.background_dim);
+                }
                 if lcd.mode == LcdMode::Cycle {
                     let list: Vec<String> = lcd.cycle.iter().map(|m| format!("{m:?}")).collect();
                     println!("     cycling every {}s: {}", lcd.cycle_seconds, list.join(" → "));

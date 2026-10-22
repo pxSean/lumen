@@ -182,9 +182,24 @@ pub struct LcdSpec {
     /// Seconds per layout in `cycle` mode.
     #[serde(default = "default_cycle_seconds")]
     pub cycle_seconds: u32,
+    /// Image or GIF drawn behind every rendered layout: a path, or [`WALLPAPER`] for the
+    /// current Omarchy wallpaper. `None` uses the theme background color.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+    /// How far the background is blended toward the theme background color, 0-100,
+    /// so readings stay legible.
+    #[serde(default = "default_background_dim")]
+    pub background_dim: u8,
     /// Size of the plot on the `graph` layout, [`GRAPH_SCALE_MIN`]..=[`GRAPH_SCALE_MAX`].
     #[serde(default = "one")]
     pub graph_scale: f32,
+}
+
+/// `background` value meaning the current Omarchy wallpaper.
+pub const WALLPAPER: &str = "wallpaper";
+
+fn default_background_dim() -> u8 {
+    55
 }
 
 pub const GRAPH_SCALE_MIN: f32 = 0.6;
@@ -201,6 +216,8 @@ impl Default for LcdSpec {
             cycle: default_cycle(),
             cycle_seconds: default_cycle_seconds(),
             graph_scale: 1.0,
+            background: None,
+            background_dim: default_background_dim(),
         }
     }
 }

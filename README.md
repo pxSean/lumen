@@ -5,7 +5,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 | Device | What lumen does |
 |---|---|
 | Corsair iCUE LINK System Hub | Per-LED lighting on all fans and the pump head; fan and pump curves; sensor readout |
-| iCUE LINK AIO LCD (TITAN 360) | 480×480 screen layouts: coolant gauge, system bars, CPU/GPU rings, load, pump and fans, temperature graph, clock, image or GIF, and a cycle of any of these. It can also show the firmware screen |
+| iCUE LINK AIO LCD (TITAN 360) | 480×480 screen layouts: coolant gauge, system bars, CPU/GPU rings, load, pump and fans, temperature graph, clock, image or GIF, and a cycle of any of these. It can also show the firmware screen. Any layout can sit on a background image, a GIF or your Omarchy wallpaper, dimmed so the readings stay legible |
 | Corsair K70 LUX / K70 LUX RGB | Per-key backlight. The model is detected automatically, and the keyboards can be swapped while the daemon runs. On the red-only K70 LUX, effects set brightness rather than color |
 | Logitech G502 HERO | Logo and DPI-strip colors (HID++ 2.0, feature 0x8070) |
 
@@ -37,6 +37,12 @@ The most specific target wins: `ch<N>`, then `pump` or `fans`.
 - If coolant reaches 55 °C, every fan and the pump go to 100% until it drops below 50 °C.
 - If a curve's temperature sensor can't be read, that curve runs at 100%.
 - When the daemon stops (stop, crash or unwind), the hub goes back to its onboard fan curve, and the LCD, keyboard and mouse go back to their firmware lighting.
+
+## LCD backgrounds
+
+`lumenctl lcd --background wallpaper` puts the current Omarchy wallpaper behind every drawn layout. It follows `omarchy theme bg next` and theme changes. You can also pass a path to a PNG, JPEG, WebP or GIF instead of `wallpaper`. `--dim 0-100` (default 55) blends the background toward the theme background color, and `--no-background` removes it. Images are center-cropped to the 480×480 round panel.
+
+Animated GIF backgrounds redraw the layout on every frame, at up to 20fps; this measured about 5% of one CPU core. GIFs longer than 150 frames are thinned to 150 to limit memory.
 
 ## LCD previews
 

@@ -70,6 +70,8 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
     let mut spec = LcdSpec::default();
     let mut frames: Vec<(Vec<u8>, Duration)> = Vec::new();
     let mut frame_idx = 0;
+    let mut background: Vec<(RgbImage, Duration)> = Vec::new();
+    let mut bg_idx = 0;
     let mut released = false;
 
     while shared.running() {
@@ -91,6 +93,15 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
                     270 => Rotation::R270,
                     _ => Rotation::R0,
                 })?;
+            }
+            background.clear();
+            bg_idx = 0;
+            if !matches!(spec.mode, LcdMode::Image | LcdMode::Off | LcdMode::Firmware) {
+                let theme = shared.theme.read().unwrap().clone();
+                background = load_background(&spec, &theme).unwrap_or_else(|e| {
+                    log::error!("LCD background: {e:#}");
+                    Vec::new()
+                });
             }
             if spec.mode == LcdMode::Image {
                 frames = match spec.image.as_deref().map(load_image) {
@@ -118,13 +129,20 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
             }
             mode => {
                 let mode = if mode == LcdMode::Cycle { cycle_mode(&spec, shared.started.elapsed()) } else { mode };
+                let base = background.get(bg_idx % background.len().max(1));
                 let img = {
                     let theme = shared.theme.read().unwrap();
                     let data = ScreenData::collect(&shared.runtime());
-                    render(mode, &spec, &theme, fonts, &data)
+                    render(mode, &spec, &theme, fonts, &data, base.map(|b| &b.0))
                 };
                 lcd.send_jpeg(&encode(&img)?)?;
-                STATS_INTERVAL
+                match base {
+                    Some((_, delay)) if background.len() > 1 => {
+                        bg_idx = bg_idx.wrapping_add(1);
+                        (*delay).max(MIN_BACKGROUND_FRAME)
+                    }
+                    _ => STATS_INTERVAL,
+                }
             }
         };
 
@@ -143,22 +161,70 @@ fn encode(img: &RgbImage) -> anyhow::Result<Vec<u8>> {
     Ok(out)
 }
 
-fn load_image(path: &str) -> anyhow::Result<Vec<(Vec<u8>, Duration)>> {
+/// Decodes an image or GIF into 480×480 frames (center-cropped) with per-frame delays.
+fn decode_frames(path: &str) -> anyhow::Result<Vec<(RgbImage, Duration)>> {
     let fit = |img: DynamicImage| img.resize_to_fill(WIDTH, HEIGHT, FilterType::Lanczos3).to_rgb8();
-    if path.to_ascii_lowercase().ends_with(".gif") {
-        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+    // Resolve symlinks (the Omarchy wallpaper is one, with no extension) and sniff the format.
+    let path = std::fs::canonicalize(path)?;
+    let reader = image::ImageReader::open(&path)?.with_guessed_format()?;
+    if reader.format() == Some(image::ImageFormat::Gif) {
+        let file = std::io::BufReader::new(std::fs::File::open(&path)?);
         let frames = GifDecoder::new(file)?.into_frames().collect_frames()?;
-        frames
+        Ok(frames
             .into_iter()
             .map(|f| {
                 let (num, den) = f.delay().numer_denom_ms();
                 let delay = Duration::from_millis((num / den.max(1)).max(20) as u64);
-                Ok((encode(&fit(DynamicImage::ImageRgba8(f.into_buffer())))?, delay))
+                (fit(DynamicImage::ImageRgba8(f.into_buffer())), delay)
             })
-            .collect()
+            .collect())
     } else {
-        Ok(vec![(encode(&fit(image::open(path)?))?, STATS_INTERVAL)])
+        Ok(vec![(fit(reader.decode()?), STATS_INTERVAL)])
     }
+}
+
+/// Image mode: frames are pre-encoded once and replayed.
+fn load_image(path: &str) -> anyhow::Result<Vec<(Vec<u8>, Duration)>> {
+    decode_frames(path)?.into_iter().map(|(img, d)| Ok((encode(&img)?, d))).collect()
+}
+
+/// Background frames are kept decoded (≈690 KB each) so layouts can be drawn on top;
+/// longer GIFs are thinned to stay under this many frames.
+const MAX_BACKGROUND_FRAMES: usize = 150;
+/// Animated backgrounds redraw the layout every frame; cap the rate to bound CPU use.
+const MIN_BACKGROUND_FRAME: Duration = Duration::from_millis(50);
+
+fn background_path(spec: &LcdSpec) -> Option<String> {
+    let bg = spec.background.as_deref()?;
+    if bg == lumen_ipc::WALLPAPER {
+        let home = std::env::var("HOME").unwrap_or_default();
+        Some(format!("{home}/.local/state/omarchy/current/background"))
+    } else {
+        Some(bg.to_string())
+    }
+}
+
+/// Decodes the background and blends it toward the theme background by `background_dim`.
+fn load_background(spec: &LcdSpec, theme: &Theme) -> anyhow::Result<Vec<(RgbImage, Duration)>> {
+    let Some(path) = background_path(spec) else { return Ok(Vec::new()) };
+    let mut frames = decode_frames(&path)?;
+    if frames.len() > MAX_BACKGROUND_FRAMES {
+        let step = frames.len().div_ceil(MAX_BACKGROUND_FRAMES);
+        log::info!("LCD background: thinning {} frames to every {step}th", frames.len());
+        frames = frames
+            .into_iter()
+            .step_by(step)
+            .map(|(img, d)| (img, d * step as u32))
+            .collect();
+    }
+    let toward = if theme.colors.is_empty() { Rgb::BLACK } else { theme.resolve("theme:background") };
+    let f = spec.background_dim.min(100) as f32 / 100.0;
+    for (img, _) in &mut frames {
+        for p in img.pixels_mut() {
+            *p = rgb(lerp(Rgb(p[0], p[1], p[2]), toward, f));
+        }
+    }
+    Ok(frames)
 }
 
 /// Renders every layout with sample data to `<dir>/<mode>.png` (for development).
@@ -185,11 +251,23 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
     };
     for mode in LcdMode::ALL.into_iter().filter(|m| m.cyclable()) {
         let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
-        render(mode, &spec, &theme, &fonts, &data).save(dir.join(format!("{name}.png")))?;
+        render(mode, &spec, &theme, &fonts, &data, None).save(dir.join(format!("{name}.png")))?;
     }
     for scale in [lumen_ipc::GRAPH_SCALE_MIN, 1.25, lumen_ipc::GRAPH_SCALE_MAX] {
         let spec = LcdSpec { graph_scale: scale, ..spec.clone() };
-        render(LcdMode::Graph, &spec, &theme, &fonts, &data).save(dir.join(format!("graph-{scale}.png")))?;
+        render(LcdMode::Graph, &spec, &theme, &fonts, &data, None).save(dir.join(format!("graph-{scale}.png")))?;
+    }
+    let wallpaper = LcdSpec { background: Some(lumen_ipc::WALLPAPER.into()), ..spec.clone() };
+    match load_background(&wallpaper, &theme) {
+        Ok(bg) if !bg.is_empty() => {
+            for mode in [LcdMode::Coolant, LcdMode::Rings, LcdMode::Graph] {
+                let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
+                render(mode, &wallpaper, &theme, &fonts, &data, Some(&bg[0].0))
+                    .save(dir.join(format!("bg-{name}.png")))?;
+            }
+        }
+        Ok(_) => {}
+        Err(e) => log::warn!("preview: no wallpaper background: {e:#}"),
     }
     Ok(())
 }
@@ -259,12 +337,16 @@ fn rgb(c: Rgb) -> image::Rgb<u8> {
     image::Rgb([c.0, c.1, c.2])
 }
 
-fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &ScreenData) -> RgbImage {
+/// Draws `mode` over `base` (a pre-dimmed background frame) or the theme background color.
+fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &ScreenData, base: Option<&RgbImage>) -> RgbImage {
     let bg = theme.resolve("theme:background");
     let fg = theme.resolve("theme:foreground");
     let muted = theme.colors.get("dark_foreground").copied().unwrap_or(fg.scale(0.5));
     let accent = theme.resolve(&spec.accent);
-    let mut img = RgbImage::from_pixel(WIDTH, HEIGHT, rgb(if theme.colors.is_empty() { Rgb::BLACK } else { bg }));
+    let mut img = match base {
+        Some(b) => b.clone(),
+        None => RgbImage::from_pixel(WIDTH, HEIGHT, rgb(if theme.colors.is_empty() { Rgb::BLACK } else { bg })),
+    };
     let cx = WIDTH as f32 / 2.0;
     let fmt = |t: Option<f32>| t.map_or("--".to_string(), |v| format!("{v:.0}°"));
 

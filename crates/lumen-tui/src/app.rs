@@ -29,6 +29,7 @@ impl Tab {
 pub enum InputKind {
     HexColor,
     ImagePath,
+    BackgroundPath,
     NewProfile,
 }
 
@@ -288,6 +289,25 @@ impl App {
                             Err(e) => self.flash(format!("{path}: {e}")),
                         }
                     }
+                    InputKind::BackgroundPath => {
+                        let bg = if value == lumen_ipc::WALLPAPER {
+                            Ok(value)
+                        } else {
+                            let path = shellexpand_home(&value);
+                            std::fs::canonicalize(&path)
+                                .map(|p| p.to_string_lossy().into_owned())
+                                .map_err(|e| format!("{path}: {e}"))
+                        };
+                        match bg {
+                            Ok(bg) => {
+                                if let Some(mut lcd) = self.status.as_ref().map(|s| s.active.lcd.clone()) {
+                                    lcd.background = Some(bg);
+                                    self.send(Request::SetLcd { lcd });
+                                }
+                            }
+                            Err(e) => self.flash(e),
+                        }
+                    }
                     InputKind::NewProfile => self.send(Request::SaveProfileAs { name: value }),
                 }
             }
@@ -506,6 +526,22 @@ impl App {
                 // Round to one decimal so repeated steps don't drift.
                 let next = ((lcd.graph_scale + step) * 10.0).round() / 10.0;
                 lcd.graph_scale = next.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+                self.send(Request::SetLcd { lcd });
+            }
+            KeyCode::Char('b') => {
+                self.input = Some(Input {
+                    kind: InputKind::BackgroundPath,
+                    prompt: "Background: image/GIF path, or 'wallpaper'",
+                    buf: lcd.background.clone().unwrap_or_else(|| lumen_ipc::WALLPAPER.into()),
+                });
+            }
+            KeyCode::Char('B') => {
+                lcd.background = None;
+                self.send(Request::SetLcd { lcd });
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                let step: i16 = if key.code == KeyCode::Char('D') { 10 } else { -10 };
+                lcd.background_dim = (lcd.background_dim as i16 + step).clamp(0, 100) as u8;
                 self.send(Request::SetLcd { lcd });
             }
             KeyCode::Char('o') => {

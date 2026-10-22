@@ -20,12 +20,14 @@ fn state_dir() -> PathBuf {
     PathBuf::from(home).join(".local/state/omarchy/current")
 }
 
-/// Changes whenever `omarchy theme set` runs.
+/// Changes whenever `omarchy theme set` or `omarchy theme bg` runs.
 fn stamp() -> Option<SystemTime> {
     let dir = state_dir();
     let name = fs::metadata(dir.join("theme.name")).and_then(|m| m.modified()).ok();
     let colors = fs::metadata(dir.join("theme/colors.toml")).and_then(|m| m.modified()).ok();
-    name.max(colors)
+    // The wallpaper is a symlink that `omarchy theme bg next` repoints; its own mtime changes.
+    let wallpaper = fs::symlink_metadata(dir.join("background")).and_then(|m| m.modified()).ok();
+    name.max(colors).max(wallpaper)
 }
 
 impl Theme {

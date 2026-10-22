@@ -101,6 +101,9 @@ fn handle(req: Request, shared: &Shared) -> anyhow::Result<Response> {
             if let Some(path) = &lcd.image {
                 ensure!(std::path::Path::new(path).is_file(), "image not found: {path}");
             }
+            if let Some(path) = lcd.background.as_deref().filter(|p| *p != lumen_ipc::WALLPAPER) {
+                ensure!(std::path::Path::new(path).is_file(), "background not found: {path}");
+            }
             active(c).lcd = lcd;
             Ok(())
         })?,

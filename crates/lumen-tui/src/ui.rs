@@ -133,7 +133,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let help = match app.tab {
         Tab::Lighting => "↑↓ target  ←→ effect  c color  # hex  +/- speed  i inherit",
         Tab::Fans => "↑↓ target  m fixed/curve  [ ] point  ←→ temp  +/- duty  a add  x del  s source  i inherit",
-        Tab::Screen => "↑↓ mode  ⏎ apply  space toggle ↻  [ ] cycle secs  < > graph size  +/- brightness  r rotate  c accent  o image",
+        Tab::Screen => "↑↓ mode  ⏎ apply  space toggle ↻  [ ] cycle secs  < > graph size  b/B backdrop  d/D dim  +/- brightness  r rotate  c accent  o image",
         Tab::Profiles => "↑↓ select  ⏎ use  n save as  d delete",
     };
     let line = match app.flash_text() {
@@ -401,6 +401,13 @@ fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
         Line::from(vec![
             Span::styled("Cycle     ", Style::default().fg(p.muted)),
             Span::raw(format!("every {}s (↻ marks layouts in the cycle)", lcd.cycle_seconds)),
+        ]),
+        Line::from(vec![
+            Span::styled("Backdrop  ", Style::default().fg(p.muted)),
+            Span::raw(match &lcd.background {
+                Some(bg) => format!("{bg}  (dim {}%, d/D to change)", lcd.background_dim),
+                None => "theme color  (b to set an image or 'wallpaper')".into(),
+            }),
         ]),
         Line::from(vec![
             Span::styled("Graph     ", Style::default().fg(p.muted)),
