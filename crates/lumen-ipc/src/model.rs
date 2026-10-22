@@ -227,7 +227,7 @@ pub enum LcdMode {
     Load,
     /// Pump speed with a duty-cycle ring, plus fan summary.
     Cooling,
-    /// Coolant and CPU temperature history.
+    /// CPU and GPU temperature history.
     Graph,
     Clock,
     /// Rotates through `cycle` every `cycle_seconds`.

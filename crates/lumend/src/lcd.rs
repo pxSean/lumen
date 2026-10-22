@@ -335,17 +335,19 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
             }
         }
         LcdMode::Graph => {
-            let cpu_color = theme.resolve("theme:yellow");
-            text(&mut img, fonts.regular.as_ref(), "LIQUID", 26.0, cx, 105.0, muted);
-            let big = d.sensors.coolant.map_or("--".to_string(), |v| format!("{v:.1}°"));
-            text(&mut img, fonts.bold.as_ref(), &big, 60.0, cx, 165.0, accent);
+            // Same colors as Rings: CPU in the accent, GPU in magenta.
+            let gpu_color = theme.resolve("theme:magenta");
+            text(&mut img, fonts.regular.as_ref(), "CPU", 26.0, cx - 85.0, 105.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), 60.0, cx - 85.0, 165.0, accent);
+            text(&mut img, fonts.regular.as_ref(), "GPU", 26.0, cx + 85.0, 105.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), 60.0, cx + 85.0, 165.0, gpu_color);
             let (x0, x1, y0, y1) = (60.0, 420.0, 195.0, 355.0);
             let series = |f: fn(&Sensors) -> Option<f32>| -> Vec<(usize, f32)> {
                 d.history.iter().enumerate().filter_map(|(i, s)| f(s).map(|v| (i, v))).collect()
             };
-            let liq = series(|s| s.coolant);
             let cpu = series(|s| s.cpu);
-            let values = liq.iter().chain(&cpu).map(|p| p.1);
+            let gpu = series(|s| s.gpu);
+            let values = cpu.iter().chain(&gpu).map(|p| p.1);
             let (lo, hi) = values.fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
             let (lo, hi) = if lo > hi { (20.0, 60.0) } else { (lo.floor() - 2.0, hi.ceil() + 2.0) };
             let (lo, hi) = if hi - lo < 10.0 { (lo, lo + 10.0) } else { (lo, hi) };
@@ -358,15 +360,13 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
             for gy in [y0, (y0 + y1) / 2.0, y1] {
                 bar(&mut img, x0, gy, x1 - x0, 1.0, 0.0, muted, muted.scale(0.4));
             }
-            let liq_pts: Vec<(f32, f32)> = liq.iter().map(to_xy).collect();
-            fill_under(&mut img, &liq_pts, y1, accent, 0.18);
-            polyline(&mut img, &cpu.iter().map(to_xy).collect::<Vec<_>>(), cpu_color, 2.5);
-            polyline(&mut img, &liq_pts, accent, 3.5);
+            let cpu_pts: Vec<(f32, f32)> = cpu.iter().map(to_xy).collect();
+            fill_under(&mut img, &cpu_pts, y1, accent, 0.15);
+            polyline(&mut img, &gpu.iter().map(to_xy).collect::<Vec<_>>(), gpu_color, 3.0);
+            polyline(&mut img, &cpu_pts, accent, 3.0);
             text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), 20.0, x0, y0 - 6.0, muted);
             text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), 20.0, x0, y1 + 22.0, muted);
             text_right(&mut img, fonts.regular.as_ref(), "3 min", 20.0, x1, y1 + 22.0, muted);
-            text_right(&mut img, fonts.regular.as_ref(), "LIQ", 24.0, cx - 12.0, 410.0, accent);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("CPU {}", fmt(d.sensors.cpu)), 24.0, cx + 12.0, 410.0, cpu_color);
         }
         LcdMode::Clock => {
             let now = chrono::Local::now();
