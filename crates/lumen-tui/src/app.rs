@@ -501,6 +501,13 @@ impl App {
                 lcd.mode = mode;
                 self.send(Request::SetLcd { lcd });
             }
+            KeyCode::Char('<') | KeyCode::Char('>') | KeyCode::Char(',') | KeyCode::Char('.') => {
+                let step = if matches!(key.code, KeyCode::Char('>') | KeyCode::Char('.')) { 0.1 } else { -0.1 };
+                // Round to one decimal so repeated steps don't drift.
+                let next = ((lcd.graph_scale + step) * 10.0).round() / 10.0;
+                lcd.graph_scale = next.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+                self.send(Request::SetLcd { lcd });
+            }
             KeyCode::Char('o') => {
                 self.input = Some(Input {
                     kind: InputKind::ImagePath,

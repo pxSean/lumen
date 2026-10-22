@@ -187,6 +187,10 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
         let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
         render(mode, &spec, &theme, &fonts, &data).save(dir.join(format!("{name}.png")))?;
     }
+    for scale in [lumen_ipc::GRAPH_SCALE_MIN, 1.25, lumen_ipc::GRAPH_SCALE_MAX] {
+        let spec = LcdSpec { graph_scale: scale, ..spec.clone() };
+        render(LcdMode::Graph, &spec, &theme, &fonts, &data).save(dir.join(format!("graph-{scale}.png")))?;
+    }
     Ok(())
 }
 
@@ -337,11 +341,12 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
         LcdMode::Graph => {
             // Same colors as Rings: CPU in the accent, GPU in magenta.
             let gpu_color = theme.resolve("theme:magenta");
-            text(&mut img, fonts.regular.as_ref(), "CPU", 26.0, cx - 85.0, 105.0, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), 60.0, cx - 85.0, 165.0, accent);
-            text(&mut img, fonts.regular.as_ref(), "GPU", 26.0, cx + 85.0, 105.0, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), 60.0, cx + 85.0, 165.0, gpu_color);
-            let (x0, x1, y0, y1) = (60.0, 420.0, 195.0, 355.0);
+            let g = graph_layout(spec.graph_scale);
+            text(&mut img, fonts.regular.as_ref(), "CPU", g.label_px, cx - 85.0, g.label_y, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), g.value_px, cx - 85.0, g.value_y, accent);
+            text(&mut img, fonts.regular.as_ref(), "GPU", g.label_px, cx + 85.0, g.label_y, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), g.value_px, cx + 85.0, g.value_y, gpu_color);
+            let (x0, x1, y0, y1) = (g.x0, g.x1, g.y0, g.y1);
             let series = |f: fn(&Sensors) -> Option<f32>| -> Vec<(usize, f32)> {
                 d.history.iter().enumerate().filter_map(|(i, s)| f(s).map(|v| (i, v))).collect()
             };
@@ -364,9 +369,10 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
             fill_under(&mut img, &cpu_pts, y1, accent, 0.15);
             polyline(&mut img, &gpu.iter().map(to_xy).collect::<Vec<_>>(), gpu_color, 3.0);
             polyline(&mut img, &cpu_pts, accent, 3.0);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), 20.0, x0, y0 - 6.0, muted);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), 20.0, x0, y1 + 22.0, muted);
-            text_right(&mut img, fonts.regular.as_ref(), "3 min", 20.0, x1, y1 + 22.0, muted);
+            // Axis labels sit inside the plot so a larger plot doesn't push them off the round panel.
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), 20.0, x0 + 4.0, y0 + 20.0, muted);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), 20.0, x0 + 4.0, y1 - 6.0, muted);
+            text_right(&mut img, fonts.regular.as_ref(), "3 min", 20.0, x1 - 4.0, y1 - 6.0, muted);
         }
         LcdMode::Clock => {
             let now = chrono::Local::now();
@@ -418,6 +424,42 @@ fn gauge(img: &mut RgbImage, radius: f32, thickness: f32, frac: f32, from: Rgb, 
             blend(img, x, y, color, cov);
         }
     }
+}
+
+/// Where the graph layout's header and plot go for a given `graph_scale`.
+struct GraphLayout {
+    label_px: f32,
+    label_y: f32,
+    value_px: f32,
+    value_y: f32,
+    x0: f32,
+    x1: f32,
+    y0: f32,
+    y1: f32,
+}
+
+/// Radius the plot's corners must stay within on the round panel.
+const SAFE_RADIUS: f32 = 226.0;
+
+fn graph_layout(scale: f32) -> GraphLayout {
+    let s = scale.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+    // The header shrinks as the plot grows.
+    let shrink = ((s - 1.0) / (lumen_ipc::GRAPH_SCALE_MAX - 1.0)).clamp(0.0, 1.0);
+    let label_px = 26.0 - 6.0 * shrink;
+    let value_px = 60.0 - 22.0 * shrink;
+    let header = label_px + 8.0 + value_px;
+    let gap = 22.0;
+    let height = 160.0 * s;
+    // Center header + plot vertically.
+    let top = 240.0 - (header + gap + height) / 2.0;
+    let label_y = top + label_px;
+    let value_y = label_y + 8.0 + value_px * 0.95;
+    let (y0, y1) = (top + header + gap, top + header + gap + height);
+    // Widest box whose corners stay inside the circle at both plot edges.
+    let dy = (y0 - 240.0).abs().max((y1 - 240.0).abs());
+    let fit = 2.0 * (SAFE_RADIUS * SAFE_RADIUS - dy * dy).max(0.0).sqrt();
+    let width = (360.0 * s).min(fit);
+    GraphLayout { label_px, label_y, value_px, value_y, x0: 240.0 - width / 2.0, x1: 240.0 + width / 2.0, y0, y1 }
 }
 
 /// Anti-aliased line through `pts` with round joins.
@@ -534,6 +576,23 @@ fn text_right(img: &mut RgbImage, font: Option<&FontVec>, s: &str, px: f32, righ
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_fits_the_round_panel_at_every_scale() {
+        let mut s = lumen_ipc::GRAPH_SCALE_MIN;
+        let mut prev_height = 0.0;
+        while s <= lumen_ipc::GRAPH_SCALE_MAX + 1e-3 {
+            let g = graph_layout(s);
+            for (x, y) in [(g.x0, g.y0), (g.x1, g.y0), (g.x0, g.y1), (g.x1, g.y1)] {
+                let r = (x - 240.0).hypot(y - 240.0);
+                assert!(r <= SAFE_RADIUS + 0.01, "scale {s}: corner ({x}, {y}) at r={r}");
+            }
+            assert!(g.label_y - g.label_px >= 240.0 - SAFE_RADIUS, "scale {s}: header clipped");
+            assert!(g.y1 - g.y0 > prev_height, "scale {s}: plot did not grow");
+            prev_height = g.y1 - g.y0;
+            s += 0.1;
+        }
+    }
 
     #[test]
     fn cycle_skips_unrenderable_and_wraps() {

@@ -182,7 +182,13 @@ pub struct LcdSpec {
     /// Seconds per layout in `cycle` mode.
     #[serde(default = "default_cycle_seconds")]
     pub cycle_seconds: u32,
+    /// Size of the plot on the `graph` layout, [`GRAPH_SCALE_MIN`]..=[`GRAPH_SCALE_MAX`].
+    #[serde(default = "one")]
+    pub graph_scale: f32,
 }
+
+pub const GRAPH_SCALE_MIN: f32 = 0.6;
+pub const GRAPH_SCALE_MAX: f32 = 1.5;
 
 impl Default for LcdSpec {
     fn default() -> Self {
@@ -194,6 +200,7 @@ impl Default for LcdSpec {
             accent: theme_accent(),
             cycle: default_cycle(),
             cycle_seconds: default_cycle_seconds(),
+            graph_scale: 1.0,
         }
     }
 }

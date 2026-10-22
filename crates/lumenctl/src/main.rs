@@ -81,6 +81,9 @@ enum Cmd {
         /// Seconds per layout in `cycle` mode.
         #[arg(long)]
         interval: Option<u32>,
+        /// Size of the plot on the graph layout, 0.6 to 1.5 (default 1.0).
+        #[arg(long)]
+        graph_scale: Option<f32>,
     },
     /// Re-read config.toml and the Omarchy theme.
     Reload,
@@ -221,7 +224,7 @@ fn main() -> anyhow::Result<()> {
             };
             client.request(&Request::SetFan { target, fan })?;
         }
-        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval } => {
+        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval, graph_scale } => {
             let mut lcd = client.status()?.active.lcd;
             if let Some(m) = mode {
                 lcd.mode = m.into();
@@ -254,6 +257,9 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(secs) = interval {
                 lcd.cycle_seconds = secs.max(1);
+            }
+            if let Some(scale) = graph_scale {
+                lcd.graph_scale = scale.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
             }
             client.request(&Request::SetLcd { lcd })?;
         }
@@ -296,7 +302,10 @@ fn print_status(st: &Status) {
             Some(e) => println!("LCD  error: {e}"),
             None => {
                 let lcd = &st.active.lcd;
-                println!("LCD  {:?}  brightness {}%  rotation {}°", lcd.mode, lcd.brightness, lcd.rotation);
+                println!(
+                    "LCD  {:?}  brightness {}%  rotation {}°  graph scale {:.1}×",
+                    lcd.mode, lcd.brightness, lcd.rotation, lcd.graph_scale
+                );
                 if lcd.mode == LcdMode::Cycle {
                     let list: Vec<String> = lcd.cycle.iter().map(|m| format!("{m:?}")).collect();
                     println!("     cycling every {}s: {}", lcd.cycle_seconds, list.join(" → "));
