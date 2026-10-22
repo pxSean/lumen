@@ -1,0 +1,20 @@
+[package]
+name = "lumend"
+description = "Lighting, fan and LCD daemon for Corsair iCUE LINK and friends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lumen-hid.workspace = true
+lumen-ipc.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+signal-hook = "0.3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+ab_glyph = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

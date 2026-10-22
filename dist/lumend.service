@@ -1,0 +1,15 @@
+[Unit]
+Description=lumen lighting, fan and AIO screen daemon
+Documentation=file://%h/Work/corsair/README.md
+
+[Service]
+ExecStart=%h/.local/bin/lumend
+ExecReload=/bin/kill -HUP $MAINPID
+# SIGTERM returns the hub to its onboard fan curve and the LCD to its firmware screen.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

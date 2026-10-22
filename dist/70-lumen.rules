@@ -1,0 +1,13 @@
+# lumen: give the logged-in user access to the hidraw nodes of supported devices.
+# Install: sudo install -m644 dist/70-lumen.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+
+# Corsair iCUE LINK System Hub
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c3f", TAG+="uaccess"
+# Corsair iCUE LINK AIO LCD screen module
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="0c4e", TAG+="uaccess"
+# Corsair K70 LUX
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1b1c", ATTRS{idProduct}=="1b36", TAG+="uaccess"
+# Logitech G502 HERO
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="046d", ATTRS{idProduct}=="c08b", TAG+="uaccess"
+# MSI Mystic Light
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0db0", ATTRS{idProduct}=="0076", TAG+="uaccess"

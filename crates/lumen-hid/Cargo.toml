@@ -1,0 +1,15 @@
+[package]
+name = "lumen-hid"
+description = "Userspace hidraw drivers for Corsair iCUE LINK, K70 LUX, Logitech G502 and MSI Mystic Light"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true
+log.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+env_logger.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
