@@ -1,4 +1,4 @@
-//! CPU and GPU temperatures from hwmon.
+//! CPU and GPU temperatures from hwmon, utilization from /proc/stat and amdgpu.
 
 use std::fs;
 use std::path::PathBuf;
@@ -6,11 +6,20 @@ use std::path::PathBuf;
 pub struct SystemSensors {
     cpu: Option<PathBuf>,
     gpu: Option<PathBuf>,
+    gpu_busy: Option<PathBuf>,
+    /// (busy, total) jiffies from the previous /proc/stat sample.
+    prev_cpu: Option<(u64, u64)>,
 }
 
 impl SystemSensors {
     pub fn discover() -> Self {
-        let mut s = Self { cpu: None, gpu: None };
+        let mut s = Self { cpu: None, gpu: None, gpu_busy: None, prev_cpu: None };
+        s.gpu_busy = fs::read_dir("/sys/class/drm")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path().join("device/gpu_busy_percent"))
+            .find(|p| p.exists());
         let Ok(entries) = fs::read_dir("/sys/class/hwmon") else { return s };
         for e in entries.flatten() {
             let dir = e.path();
@@ -26,7 +35,7 @@ impl SystemSensors {
                 _ => {}
             }
         }
-        log::info!("cpu sensor: {:?}, gpu sensor: {:?}", s.cpu, s.gpu);
+        log::info!("cpu sensor: {:?}, gpu sensor: {:?}, gpu load: {:?}", s.cpu, s.gpu, s.gpu_busy);
         s
     }
 
@@ -36,6 +45,23 @@ impl SystemSensors {
 
     pub fn gpu(&self) -> Option<f32> {
         self.gpu.as_ref().and_then(read_milli)
+    }
+
+    /// Utilization since the previous call, 0-100%. `None` on the first call.
+    pub fn cpu_load(&mut self) -> Option<f32> {
+        let stat = fs::read_to_string("/proc/stat").ok()?;
+        let fields: Vec<u64> = stat.lines().next()?.split_whitespace().skip(1).filter_map(|v| v.parse().ok()).collect();
+        // user nice system idle iowait irq softirq steal
+        let idle = fields.get(3)? + fields.get(4).unwrap_or(&0);
+        let total: u64 = fields.iter().take(8).sum();
+        let busy = total - idle;
+        let prev = self.prev_cpu.replace((busy, total))?;
+        let dt = total.saturating_sub(prev.1);
+        (dt > 0).then(|| busy.saturating_sub(prev.0) as f32 / dt as f32 * 100.0)
+    }
+
+    pub fn gpu_load(&self) -> Option<f32> {
+        fs::read_to_string(self.gpu_busy.as_ref()?).ok()?.trim().parse().ok()
     }
 }
 

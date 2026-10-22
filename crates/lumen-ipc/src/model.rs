@@ -176,6 +176,12 @@ pub struct LcdSpec {
     /// Accent color for gauges.
     #[serde(default = "theme_accent")]
     pub accent: ColorRef,
+    /// Layouts shown in turn by `cycle` mode.
+    #[serde(default = "default_cycle")]
+    pub cycle: Vec<LcdMode>,
+    /// Seconds per layout in `cycle` mode.
+    #[serde(default = "default_cycle_seconds")]
+    pub cycle_seconds: u32,
 }
 
 impl Default for LcdSpec {
@@ -186,8 +192,18 @@ impl Default for LcdSpec {
             rotation: 0,
             image: None,
             accent: theme_accent(),
+            cycle: default_cycle(),
+            cycle_seconds: default_cycle_seconds(),
         }
     }
+}
+
+fn default_cycle() -> Vec<LcdMode> {
+    vec![LcdMode::Coolant, LcdMode::Rings, LcdMode::Load, LcdMode::Cooling, LcdMode::Graph]
+}
+
+fn default_cycle_seconds() -> u32 {
+    10
 }
 
 fn hundred() -> u8 {
@@ -205,7 +221,17 @@ pub enum LcdMode {
     Coolant,
     /// CPU, GPU and coolant temperatures.
     System,
+    /// Concentric CPU (outer) and GPU (inner) temperature rings around the coolant reading.
+    Rings,
+    /// CPU and GPU utilization.
+    Load,
+    /// Pump speed with a duty-cycle ring, plus fan summary.
+    Cooling,
+    /// Coolant and CPU temperature history.
+    Graph,
     Clock,
+    /// Rotates through `cycle` every `cycle_seconds`.
+    Cycle,
     Image,
     /// Hand the panel back to its firmware screen.
     Firmware,
@@ -213,10 +239,20 @@ pub enum LcdMode {
 }
 
 impl LcdMode {
-    pub const ALL: [LcdMode; 6] = [
+    /// Rendered layouts that can take part in `cycle`.
+    pub fn cyclable(self) -> bool {
+        !matches!(self, LcdMode::Cycle | LcdMode::Image | LcdMode::Firmware | LcdMode::Off)
+    }
+
+    pub const ALL: [LcdMode; 11] = [
         LcdMode::Coolant,
         LcdMode::System,
+        LcdMode::Rings,
+        LcdMode::Load,
+        LcdMode::Cooling,
+        LcdMode::Graph,
         LcdMode::Clock,
+        LcdMode::Cycle,
         LcdMode::Image,
         LcdMode::Firmware,
         LcdMode::Off,

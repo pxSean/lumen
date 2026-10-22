@@ -105,7 +105,7 @@ mod tests {
         let ctx = Ctx {
             t: 0.0,
             theme: &theme,
-            sensors: Sensors { cpu: None, gpu: None, coolant: Some(40.0) },
+            sensors: Sensors { coolant: Some(40.0), ..Default::default() },
         };
         let e = Effect::Temperature {
             source: TempSource::Coolant,

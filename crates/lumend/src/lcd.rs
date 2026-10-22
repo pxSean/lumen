@@ -12,15 +12,17 @@ use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, RgbImage};
 use lumen_hid::Rgb;
 use lumen_hid::icue_lcd::{HEIGHT, Lcd, Rotation, WIDTH};
-use lumen_ipc::{LcdMode, LcdSpec, LcdStatus};
+use lumen_ipc::{LcdMode, LcdSpec, LcdStatus, Sensors, ZoneStatus};
 
 use crate::effects::lerp;
-use crate::state::Shared;
+use crate::state::{HISTORY_LEN, Runtime, Shared};
 use crate::theme::Theme;
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
 const GAUGE_MIN: f32 = 20.0;
 const GAUGE_MAX: f32 = 60.0;
+const RING_MIN: f32 = 30.0;
+const RING_MAX: f32 = 95.0;
 
 pub fn run(shared: Arc<Shared>) {
     let fonts = Fonts::load();
@@ -115,17 +117,10 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
                 if frames.len() == 1 { STATS_INTERVAL } else { *delay }
             }
             mode => {
+                let mode = if mode == LcdMode::Cycle { cycle_mode(&spec, shared.started.elapsed()) } else { mode };
                 let img = {
                     let theme = shared.theme.read().unwrap();
-                    let rt = shared.runtime();
-                    let pump_rpm = rt
-                        .devices
-                        .iter()
-                        .flat_map(|d| &d.zones)
-                        .find(|z| z.kind == "aio" || z.kind == "pump")
-                        .and_then(|z| z.rpm);
-                    let data = ScreenData { sensors: rt.sensors, pump_rpm };
-                    drop(rt);
+                    let data = ScreenData::collect(&shared.runtime());
                     render(mode, &spec, &theme, fonts, &data)
                 };
                 lcd.send_jpeg(&encode(&img)?)?;
@@ -166,9 +161,71 @@ fn load_image(path: &str) -> anyhow::Result<Vec<(Vec<u8>, Duration)>> {
     }
 }
 
+/// Renders every layout with sample data to `<dir>/<mode>.png` (for development).
+pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let fonts = Fonts::load();
+    let theme = Theme::load();
+    let spec = LcdSpec::default();
+    let sample = |i: usize| Sensors {
+        cpu: Some(48.0 + 15.0 * (i as f32 / 9.0).sin()),
+        gpu: Some(41.0 + 6.0 * (i as f32 / 23.0).sin()),
+        coolant: Some(33.0 + i as f32 * 0.01),
+        cpu_load: Some(23.0),
+        gpu_load: Some(61.0),
+    };
+    let data = ScreenData {
+        sensors: sample(HISTORY_LEN - 1),
+        pump_rpm: Some(2302),
+        pump_duty: Some(65),
+        fan_rpm: Some(735),
+        fan_duty: Some(36),
+        fan_count: 6,
+        history: (0..HISTORY_LEN).map(sample).collect(),
+    };
+    for mode in LcdMode::ALL.into_iter().filter(|m| m.cyclable()) {
+        let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
+        render(mode, &spec, &theme, &fonts, &data).save(dir.join(format!("{name}.png")))?;
+    }
+    Ok(())
+}
+
+/// The layout `cycle` mode shows right now.
+fn cycle_mode(spec: &LcdSpec, elapsed: Duration) -> LcdMode {
+    let list: Vec<LcdMode> = spec.cycle.iter().copied().filter(|m| m.cyclable()).collect();
+    if list.is_empty() {
+        return LcdMode::Coolant;
+    }
+    let slot = elapsed.as_secs() / spec.cycle_seconds.max(1) as u64;
+    list[slot as usize % list.len()]
+}
+
 struct ScreenData {
-    sensors: lumen_ipc::Sensors,
+    sensors: Sensors,
     pump_rpm: Option<u16>,
+    pump_duty: Option<u8>,
+    fan_rpm: Option<u16>,
+    fan_duty: Option<u8>,
+    fan_count: usize,
+    history: Vec<Sensors>,
+}
+
+impl ScreenData {
+    fn collect(rt: &Runtime) -> Self {
+        let zones: Vec<&ZoneStatus> = rt.devices.iter().flat_map(|d| &d.zones).collect();
+        let pump = zones.iter().find(|z| z.kind == "aio" || z.kind == "pump");
+        let fans: Vec<&&ZoneStatus> = zones.iter().filter(|z| z.kind == "fan" && z.rpm.is_some()).collect();
+        let avg = |v: Vec<u32>| (!v.is_empty()).then(|| v.iter().sum::<u32>() / v.len() as u32);
+        Self {
+            sensors: rt.sensors,
+            pump_rpm: pump.and_then(|z| z.rpm),
+            pump_duty: pump.and_then(|z| z.duty),
+            fan_rpm: avg(fans.iter().filter_map(|z| z.rpm).map(u32::from).collect()).map(|v| v as u16),
+            fan_duty: avg(fans.iter().filter_map(|z| z.duty).map(u32::from).collect()).map(|v| v as u8),
+            fan_count: fans.len(),
+            history: rt.history.iter().copied().collect(),
+        }
+    }
 }
 
 pub struct Fonts {
@@ -177,7 +234,7 @@ pub struct Fonts {
 }
 
 impl Fonts {
-    fn load() -> Self {
+    pub fn load() -> Self {
         let find = |pattern: &str| -> Option<FontVec> {
             let out = Command::new("fc-match").args(["-f", "%{file}", pattern]).output().ok()?;
             let path = String::from_utf8(out.stdout).ok()?;
@@ -234,6 +291,83 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
                 bar(&mut img, 95.0, y + 18.0, 290.0, 8.0, frac, accent, muted.scale(0.5));
             }
         }
+        LcdMode::Rings => {
+            let second = theme.resolve("theme:magenta");
+            let hot = theme.resolve("theme:red");
+            let frac = |t: Option<f32>| t.map_or(0.0, |v| (v - RING_MIN) / (RING_MAX - RING_MIN));
+            let (fc, fg_) = (frac(d.sensors.cpu), frac(d.sensors.gpu));
+            gauge(&mut img, 212.0, 18.0, fc, accent, lerp(accent, hot, (fc - 0.5) * 2.0), muted.scale(0.6));
+            gauge(&mut img, 186.0, 18.0, fg_, second, lerp(second, hot, (fg_ - 0.5) * 2.0), muted.scale(0.6));
+            text(&mut img, fonts.regular.as_ref(), "CPU", 26.0, cx, 140.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), 84.0, cx, 220.0, accent);
+            text(&mut img, fonts.regular.as_ref(), "GPU", 26.0, cx, 262.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), 84.0, cx, 342.0, second);
+            let liq = d.sensors.coolant.map_or("--".to_string(), |v| format!("LIQ {v:.1}°"));
+            text(&mut img, fonts.regular.as_ref(), &liq, 28.0, cx, 400.0, fg);
+        }
+        LcdMode::Load => {
+            let pct = |v: Option<f32>| v.map_or("--".to_string(), |v| format!("{v:.0}%"));
+            let rows = [
+                ("CPU", d.sensors.cpu_load, d.sensors.cpu, accent),
+                ("GPU", d.sensors.gpu_load, d.sensors.gpu, theme.resolve("theme:magenta")),
+            ];
+            for (i, (label, load, temp, color)) in rows.into_iter().enumerate() {
+                let y = 190.0 + i as f32 * 120.0;
+                text_left(&mut img, fonts.regular.as_ref(), label, 36.0, 90.0, y, muted);
+                text_right(&mut img, fonts.bold.as_ref(), &pct(load), 76.0, 390.0, y, fg);
+                bar(&mut img, 90.0, y + 20.0, 300.0, 12.0, load.unwrap_or(0.0) / 100.0, color, muted.scale(0.5));
+                text_left(&mut img, fonts.regular.as_ref(), &fmt(temp), 24.0, 90.0, y + 58.0, muted);
+            }
+            let liq = d.sensors.coolant.map_or("--".to_string(), |v| format!("LIQ {v:.1}°"));
+            text(&mut img, fonts.regular.as_ref(), &liq, 28.0, cx, 418.0, accent);
+        }
+        LcdMode::Cooling => {
+            let duty = d.pump_duty.map_or(0.0, |p| p as f32 / 100.0);
+            gauge(&mut img, 205.0, 22.0, duty, accent, accent, muted.scale(0.6));
+            text(&mut img, fonts.regular.as_ref(), "PUMP", 32.0, cx, 155.0, muted);
+            let rpm = d.pump_rpm.map_or("--".to_string(), |r| r.to_string());
+            text(&mut img, fonts.bold.as_ref(), &rpm, 110.0, cx, 265.0, fg);
+            let duty_txt = d.pump_duty.map_or("RPM".to_string(), |p| format!("RPM · {p}%"));
+            text(&mut img, fonts.regular.as_ref(), &duty_txt, 28.0, cx, 305.0, muted);
+            if let Some(rpm) = d.fan_rpm {
+                let fans = format!("{}× FANS {rpm} · {}%", d.fan_count, d.fan_duty.unwrap_or(0));
+                text(&mut img, fonts.regular.as_ref(), &fans, 28.0, cx, 370.0, accent);
+            }
+        }
+        LcdMode::Graph => {
+            let cpu_color = theme.resolve("theme:yellow");
+            text(&mut img, fonts.regular.as_ref(), "LIQUID", 26.0, cx, 105.0, muted);
+            let big = d.sensors.coolant.map_or("--".to_string(), |v| format!("{v:.1}°"));
+            text(&mut img, fonts.bold.as_ref(), &big, 60.0, cx, 165.0, accent);
+            let (x0, x1, y0, y1) = (60.0, 420.0, 195.0, 355.0);
+            let series = |f: fn(&Sensors) -> Option<f32>| -> Vec<(usize, f32)> {
+                d.history.iter().enumerate().filter_map(|(i, s)| f(s).map(|v| (i, v))).collect()
+            };
+            let liq = series(|s| s.coolant);
+            let cpu = series(|s| s.cpu);
+            let values = liq.iter().chain(&cpu).map(|p| p.1);
+            let (lo, hi) = values.fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
+            let (lo, hi) = if lo > hi { (20.0, 60.0) } else { (lo.floor() - 2.0, hi.ceil() + 2.0) };
+            let (lo, hi) = if hi - lo < 10.0 { (lo, lo + 10.0) } else { (lo, hi) };
+            let n = d.history.len();
+            let to_xy = |&(i, v): &(usize, f32)| {
+                // Newest sample at the right edge; the plot fills in from the right over HISTORY_LEN s.
+                let age = (n - 1 - i) as f32;
+                (x1 - age / (HISTORY_LEN - 1) as f32 * (x1 - x0), y1 - (v - lo) / (hi - lo) * (y1 - y0))
+            };
+            for gy in [y0, (y0 + y1) / 2.0, y1] {
+                bar(&mut img, x0, gy, x1 - x0, 1.0, 0.0, muted, muted.scale(0.4));
+            }
+            let liq_pts: Vec<(f32, f32)> = liq.iter().map(to_xy).collect();
+            fill_under(&mut img, &liq_pts, y1, accent, 0.18);
+            polyline(&mut img, &cpu.iter().map(to_xy).collect::<Vec<_>>(), cpu_color, 2.5);
+            polyline(&mut img, &liq_pts, accent, 3.5);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), 20.0, x0, y0 - 6.0, muted);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), 20.0, x0, y1 + 22.0, muted);
+            text_right(&mut img, fonts.regular.as_ref(), "3 min", 20.0, x1, y1 + 22.0, muted);
+            text_right(&mut img, fonts.regular.as_ref(), "LIQ", 24.0, cx - 12.0, 410.0, accent);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("CPU {}", fmt(d.sensors.cpu)), 24.0, cx + 12.0, 410.0, cpu_color);
+        }
         LcdMode::Clock => {
             let now = chrono::Local::now();
             gauge(&mut img, 205.0, 10.0, (now.timestamp() % 60) as f32 / 60.0, accent, accent, muted.scale(0.4));
@@ -245,7 +379,8 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
             text(&mut img, fonts.regular.as_ref(), "no image set", 32.0, cx, 250.0, muted);
         }
         LcdMode::Off => img = RgbImage::new(WIDTH, HEIGHT),
-        LcdMode::Firmware => {}
+        // Resolved by the caller / not rendered.
+        LcdMode::Cycle | LcdMode::Firmware => {}
     }
     img
 }
@@ -281,6 +416,50 @@ fn gauge(img: &mut RgbImage, radius: f32, thickness: f32, frac: f32, from: Rgb, 
             }
             let color = if pos <= frac { lerp(from, to, pos) } else { track };
             blend(img, x, y, color, cov);
+        }
+    }
+}
+
+/// Anti-aliased line through `pts` with round joins.
+fn polyline(img: &mut RgbImage, pts: &[(f32, f32)], color: Rgb, width: f32) {
+    // Accumulate max coverage per pixel first so overlapping stamps blend exactly once.
+    let mut mask = vec![0f32; (WIDTH * HEIGHT) as usize];
+    let r = width / 2.0;
+    let mut stamp = |px: f32, py: f32| {
+        for y in ((py - r - 1.0) as i32).max(0)..=((py + r + 1.0) as i32).min(HEIGHT as i32 - 1) {
+            for x in ((px - r - 1.0) as i32).max(0)..=((px + r + 1.0) as i32).min(WIDTH as i32 - 1) {
+                let dist = (x as f32 + 0.5 - px).hypot(y as f32 + 0.5 - py);
+                let m = &mut mask[(y as u32 * WIDTH + x as u32) as usize];
+                *m = m.max((r - dist + 0.5).clamp(0.0, 1.0));
+            }
+        }
+    };
+    if let [only] = pts {
+        stamp(only.0, only.1);
+    }
+    for w in pts.windows(2) {
+        let ((ax, ay), (bx, by)) = (w[0], w[1]);
+        let steps = ((bx - ax).hypot(by - ay) / 0.75).ceil().max(1.0) as usize;
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            stamp(ax + (bx - ax) * t, ay + (by - ay) * t);
+        }
+    }
+    for (i, &cov) in mask.iter().enumerate().filter(|(_, c)| **c > 0.0) {
+        blend(img, (i as u32 % WIDTH) as i32, (i as u32 / WIDTH) as i32, color, cov);
+    }
+}
+
+/// Translucent fill between a polyline and the horizontal line `base`.
+fn fill_under(img: &mut RgbImage, pts: &[(f32, f32)], base: f32, color: Rgb, alpha: f32) {
+    for w in pts.windows(2) {
+        let ((ax, ay), (bx, by)) = (w[0], w[1]);
+        for x in ax.round() as i32..bx.round() as i32 {
+            let t = if bx > ax { (x as f32 - ax) / (bx - ax) } else { 0.0 };
+            let top = ay + (by - ay) * t;
+            for y in top.round() as i32..base as i32 {
+                blend(img, x, y, color, alpha);
+            }
         }
     }
 }
@@ -349,5 +528,24 @@ fn text_right(img: &mut RgbImage, font: Option<&FontVec>, s: &str, px: f32, righ
     if let Some(font) = font {
         let w = text_width(font, s, px);
         text_at(img, font, s, px, right - w, baseline, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycle_skips_unrenderable_and_wraps() {
+        let spec = LcdSpec {
+            cycle: vec![LcdMode::Rings, LcdMode::Image, LcdMode::Graph],
+            cycle_seconds: 10,
+            ..LcdSpec::default()
+        };
+        assert_eq!(cycle_mode(&spec, Duration::from_secs(5)), LcdMode::Rings);
+        assert_eq!(cycle_mode(&spec, Duration::from_secs(15)), LcdMode::Graph);
+        assert_eq!(cycle_mode(&spec, Duration::from_secs(25)), LcdMode::Rings);
+        let empty = LcdSpec { cycle: vec![LcdMode::Off], ..LcdSpec::default() };
+        assert_eq!(cycle_mode(&empty, Duration::ZERO), LcdMode::Coolant);
     }
 }

@@ -68,6 +68,11 @@ pub struct Sensors {
     pub cpu: Option<f32>,
     pub gpu: Option<f32>,
     pub coolant: Option<f32>,
+    /// Utilization, 0-100%.
+    #[serde(default)]
+    pub cpu_load: Option<f32>,
+    #[serde(default)]
+    pub gpu_load: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

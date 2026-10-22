@@ -133,7 +133,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     let help = match app.tab {
         Tab::Lighting => "↑↓ target  ←→ effect  c color  # hex  +/- speed  i inherit",
         Tab::Fans => "↑↓ target  m fixed/curve  [ ] point  ←→ temp  +/- duty  a add  x del  s source  i inherit",
-        Tab::Screen => "↑↓ mode  ⏎ apply  +/- brightness  r rotate  c accent  o image",
+        Tab::Screen => "↑↓ mode  ⏎ apply  space toggle ↻  [ ] cycle secs  +/- brightness  r rotate  c accent  o image",
         Tab::Profiles => "↑↓ select  ⏎ use  n save as  d delete",
     };
     let line = match app.flash_text() {
@@ -353,8 +353,13 @@ fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
     let [list_area, detail] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
     let describe = |m: LcdMode| match m {
         LcdMode::Coolant => "Coolant gauge",
-        LcdMode::System => "CPU / GPU / coolant",
+        LcdMode::System => "CPU / GPU / coolant bars",
+        LcdMode::Rings => "CPU & GPU rings",
+        LcdMode::Load => "CPU & GPU load",
+        LcdMode::Cooling => "Pump & fans",
+        LcdMode::Graph => "Temperature graph",
         LcdMode::Clock => "Clock",
+        LcdMode::Cycle => "Cycle layouts",
         LcdMode::Image => "Image / GIF",
         LcdMode::Firmware => "Corsair firmware screen",
         LcdMode::Off => "Off",
@@ -363,9 +368,11 @@ fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
         .iter()
         .map(|m| {
             let active = *m == lcd.mode;
+            let in_cycle = lcd.cycle.contains(m);
             ListItem::new(Line::from(vec![
                 Span::styled(if active { "● " } else { "  " }, Style::default().fg(p.accent)),
-                Span::styled(describe(*m), Style::default().fg(if active { p.fg } else { p.muted })),
+                Span::styled(format!("{:<26}", describe(*m)), Style::default().fg(if active { p.fg } else { p.muted })),
+                Span::styled(if in_cycle { "↻" } else { "" }, Style::default().fg(p.muted)),
             ]))
         })
         .collect();
@@ -391,6 +398,10 @@ fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
     let lines = vec![
         Line::from(vec![Span::styled("Panel     ", Style::default().fg(p.muted)), Span::raw(conn)]),
         Line::from(vec![Span::styled("Rotation  ", Style::default().fg(p.muted)), Span::raw(format!("{}°", lcd.rotation))]),
+        Line::from(vec![
+            Span::styled("Cycle     ", Style::default().fg(p.muted)),
+            Span::raw(format!("every {}s (↻ marks layouts in the cycle)", lcd.cycle_seconds)),
+        ]),
         Line::from(vec![
             Span::styled("Accent    ", Style::default().fg(p.muted)),
             swatch(resolve(Some(st), &lcd.accent)),

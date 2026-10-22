@@ -75,6 +75,12 @@ enum Cmd {
         /// Gauge color.
         #[arg(long)]
         accent: Option<String>,
+        /// Layouts for `cycle` mode, comma-separated (e.g. coolant,rings,graph).
+        #[arg(long, value_delimiter = ',')]
+        cycle: Option<Vec<Mode>>,
+        /// Seconds per layout in `cycle` mode.
+        #[arg(long)]
+        interval: Option<u32>,
     },
     /// Re-read config.toml and the Omarchy theme.
     Reload,
@@ -116,7 +122,12 @@ impl From<Source> for TempSource {
 enum Mode {
     Coolant,
     System,
+    Rings,
+    Load,
+    Cooling,
+    Graph,
     Clock,
+    Cycle,
     Image,
     Firmware,
     Off,
@@ -127,7 +138,12 @@ impl From<Mode> for LcdMode {
         match m {
             Mode::Coolant => LcdMode::Coolant,
             Mode::System => LcdMode::System,
+            Mode::Rings => LcdMode::Rings,
+            Mode::Load => LcdMode::Load,
+            Mode::Cooling => LcdMode::Cooling,
+            Mode::Graph => LcdMode::Graph,
             Mode::Clock => LcdMode::Clock,
+            Mode::Cycle => LcdMode::Cycle,
             Mode::Image => LcdMode::Image,
             Mode::Firmware => LcdMode::Firmware,
             Mode::Off => LcdMode::Off,
@@ -205,7 +221,7 @@ fn main() -> anyhow::Result<()> {
             };
             client.request(&Request::SetFan { target, fan })?;
         }
-        Cmd::Lcd { mode, image, brightness, rotation, accent } => {
+        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval } => {
             let mut lcd = client.status()?.active.lcd;
             if let Some(m) = mode {
                 lcd.mode = m.into();
@@ -228,6 +244,16 @@ fn main() -> anyhow::Result<()> {
             }
             if let Some(a) = accent {
                 lcd.accent = a;
+            }
+            if let Some(list) = cycle {
+                let list: Vec<LcdMode> = list.into_iter().map(LcdMode::from).collect();
+                if let Some(bad) = list.iter().find(|m| !m.cyclable()) {
+                    bail!("{bad:?} can't be part of a cycle");
+                }
+                lcd.cycle = list;
+            }
+            if let Some(secs) = interval {
+                lcd.cycle_seconds = secs.max(1);
             }
             client.request(&Request::SetLcd { lcd })?;
         }
@@ -268,10 +294,14 @@ fn print_status(st: &Status) {
         println!();
         match &lcd.error {
             Some(e) => println!("LCD  error: {e}"),
-            None => println!(
-                "LCD  {:?}  brightness {}%  rotation {}°",
-                st.active.lcd.mode, st.active.lcd.brightness, st.active.lcd.rotation
-            ),
+            None => {
+                let lcd = &st.active.lcd;
+                println!("LCD  {:?}  brightness {}%  rotation {}°", lcd.mode, lcd.brightness, lcd.rotation);
+                if lcd.mode == LcdMode::Cycle {
+                    let list: Vec<String> = lcd.cycle.iter().map(|m| format!("{m:?}")).collect();
+                    println!("     cycling every {}s: {}", lcd.cycle_seconds, list.join(" → "));
+                }
+            }
         }
     }
     println!();

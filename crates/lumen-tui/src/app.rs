@@ -473,7 +473,26 @@ impl App {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.lcd_sel = (self.lcd_sel + n - 1) % n,
             KeyCode::Down | KeyCode::Char('j') => self.lcd_sel = (self.lcd_sel + 1) % n,
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Char(' ') => {
+                let mode = LcdMode::ALL[self.lcd_sel];
+                if !mode.cyclable() {
+                    return self.flash("only rendered layouts can be part of the cycle".into());
+                }
+                if let Some(i) = lcd.cycle.iter().position(|m| *m == mode) {
+                    lcd.cycle.remove(i);
+                } else {
+                    // Keep the cycle in menu order.
+                    lcd.cycle.push(mode);
+                    lcd.cycle.sort_by_key(|m| LcdMode::ALL.iter().position(|a| a == m));
+                }
+                self.send(Request::SetLcd { lcd });
+            }
+            KeyCode::Char('[') | KeyCode::Char(']') => {
+                let step: i64 = if key.code == KeyCode::Char(']') { 5 } else { -5 };
+                lcd.cycle_seconds = (lcd.cycle_seconds as i64 + step).clamp(5, 300) as u32;
+                self.send(Request::SetLcd { lcd });
+            }
+            KeyCode::Enter => {
                 let mode = LcdMode::ALL[self.lcd_sel];
                 if mode == LcdMode::Image && lcd.image.is_none() {
                     self.input = Some(Input { kind: InputKind::ImagePath, prompt: "Image or GIF path", buf: String::new() });

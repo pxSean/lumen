@@ -21,9 +21,13 @@ pub struct Shared {
     pub started: Instant,
 }
 
+/// One sample per second, oldest first.
+pub const HISTORY_LEN: usize = 180;
+
 #[derive(Default)]
 pub struct Runtime {
     pub sensors: Sensors,
+    pub history: std::collections::VecDeque<Sensors>,
     pub critical: bool,
     pub devices: Vec<DeviceStatus>,
     pub lcd: Option<LcdStatus>,
