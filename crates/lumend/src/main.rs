@@ -43,7 +43,7 @@ fn main() -> anyhow::Result<()> {
     let workers = [
         spawn("hub", &shared, hub::run)?,
         spawn("lcd", &shared, lcd::run)?,
-        spawn("k70", &shared, lightdev::run::<lumen_hid::k70_lux::K70Lux>)?,
+        spawn("k70", &shared, lightdev::run::<lumen_hid::k70::K70>)?,
         spawn("g502", &shared, lightdev::run::<lumen_hid::g502::G502>)?,
     ];
 

@@ -2,7 +2,7 @@ pub mod hidraw;
 pub mod icue_link;
 pub mod g502;
 pub mod icue_lcd;
-pub mod k70_lux;
+pub mod k70;
 
 use std::path::PathBuf;
 

@@ -6,7 +6,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 |---|---|
 | Corsair iCUE LINK System Hub | Per-LED lighting on all fans and the pump head; fan and pump curves; sensor readout |
 | iCUE LINK AIO LCD (TITAN 360) | 480×480 screen layouts: coolant gauge, system bars, CPU/GPU rings, load, pump and fans, temperature graph, clock, image or GIF, and a cycle of any of these. It can also show the firmware screen |
-| Corsair K70 LUX | Per-key backlight. These LEDs are red only, so effects set brightness, not color |
+| Corsair K70 LUX / K70 LUX RGB | Per-key backlight. The model is detected automatically, and the keyboards can be swapped while the daemon runs. On the red-only K70 LUX, effects set brightness rather than color |
 | Logitech G502 HERO | Logo and DPI-strip colors (HID++ 2.0, feature 0x8070) |
 
 ## Pieces

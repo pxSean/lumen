@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use lumen_hid::Rgb;
 use lumen_hid::g502::G502;
-use lumen_hid::k70_lux::{self, K70Lux};
+use lumen_hid::k70::{K70, Model};
 use lumen_ipc::{DeviceStatus, ZoneStatus};
 
 use crate::effects::{self, Ctx};
@@ -23,11 +23,16 @@ pub struct ZoneInfo {
 
 pub trait LightDevice: Sized {
     const ID: &'static str;
+    /// Shown while no device is connected.
     const NAME: &'static str;
     /// Resend unchanged frames this often.
     const KEEPALIVE: Duration;
 
     fn open() -> lumen_hid::Result<Self>;
+    /// The connected model's name.
+    fn name(&self) -> String {
+        Self::NAME.to_string()
+    }
     fn zones(&self) -> Vec<ZoneInfo>;
     /// One color slice per zone, in `zones()` order.
     fn write(&mut self, frame: &[Vec<Rgb>]) -> lumen_hid::Result<()>;
@@ -62,10 +67,10 @@ pub fn run<D: LightDevice>(shared: Arc<Shared>) {
 fn session<D: LightDevice>(shared: &Shared) -> lumen_hid::Result<()> {
     let mut dev = D::open()?;
     let zones = dev.zones();
-    log::info!("{} connected: {} zone(s)", D::NAME, zones.len());
+    log::info!("{} connected: {} zone(s)", dev.name(), zones.len());
     shared.update_device(DeviceStatus {
         id: D::ID.into(),
-        name: D::NAME.into(),
+        name: dev.name(),
         connected: true,
         error: None,
         zones: zones
@@ -116,28 +121,32 @@ fn session<D: LightDevice>(shared: &Shared) -> lumen_hid::Result<()> {
     Ok(())
 }
 
-impl LightDevice for K70Lux {
+/// Both K70 models share the `k70` id, so lighting settings carry over when swapping them.
+impl LightDevice for K70 {
     const ID: &'static str = "k70";
-    const NAME: &'static str = "Corsair K70 LUX";
+    const NAME: &'static str = "Corsair K70";
     const KEEPALIVE: Duration = Duration::from_secs(5);
 
     fn open() -> lumen_hid::Result<Self> {
-        let mut k = K70Lux::open()?;
+        let mut k = K70::open()?;
         k.set_software_mode(true)?;
         Ok(k)
     }
 
+    fn name(&self) -> String {
+        self.model.name().to_string()
+    }
+
     fn zones(&self) -> Vec<ZoneInfo> {
-        vec![ZoneInfo { key: "keys".into(), name: "Keys (red backlight)".into(), kind: "keyboard", leds: k70_lux::LEDS }]
+        let name = match self.model {
+            Model::Lux => "Keys (red backlight)",
+            Model::LuxRgb => "Keys",
+        };
+        vec![ZoneInfo { key: "keys".into(), name: name.into(), kind: "keyboard", leds: self.model.leds() }]
     }
 
     fn write(&mut self, frame: &[Vec<Rgb>]) -> lumen_hid::Result<()> {
-        // Red-only LEDs: show each color's perceived brightness.
-        let levels: Vec<u8> = frame[0]
-            .iter()
-            .map(|c| (0.299 * c.0 as f32 + 0.587 * c.1 as f32 + 0.114 * c.2 as f32).round() as u8)
-            .collect();
-        self.write_brightness(&levels)
+        self.write_colors(&frame[0])
     }
 }
 

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use lumen_hid::{Rgb, g502::G502, k70_lux::{self, K70Lux}};
+use lumen_hid::{Rgb, g502::G502, k70::K70};
 
 fn main() {
     env_logger::init();
@@ -23,12 +23,12 @@ fn main() {
     loop {
         attempt += 1;
         let r = (|| -> lumen_hid::Result<()> {
-            let mut k = K70Lux::open()?;
-            println!("K70 serial={}", k.serial());
+            let mut k = K70::open()?;
+            println!("{} serial={}", k.model.name(), k.serial());
             k.set_software_mode(true)?;
             for step in 0..40 {
                 let level = ((step as f32 / 39.0 * std::f32::consts::PI).sin() * 255.0) as u8;
-                k.write_brightness(&[level; k70_lux::LEDS])?;
+                k.write_colors(&vec![Rgb(level, level / 3, 0); k.model.leds()])?;
                 std::thread::sleep(Duration::from_millis(75));
             }
             Ok(())
