@@ -370,9 +370,10 @@ fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scree
             polyline(&mut img, &gpu.iter().map(to_xy).collect::<Vec<_>>(), gpu_color, 3.0);
             polyline(&mut img, &cpu_pts, accent, 3.0);
             // Axis labels sit inside the plot so a larger plot doesn't push them off the round panel.
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), 20.0, x0 + 4.0, y0 + 20.0, muted);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), 20.0, x0 + 4.0, y1 - 6.0, muted);
-            text_right(&mut img, fonts.regular.as_ref(), "3 min", 20.0, x1 - 4.0, y1 - 6.0, muted);
+            let (px, pad) = (g.axis_px, g.axis_px * 0.25);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), px, x0 + pad, y0 + px, muted);
+            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), px, x0 + pad, y1 - pad, muted);
+            text_right(&mut img, fonts.regular.as_ref(), "3 min", px, x1 - pad, y1 - pad, muted);
         }
         LcdMode::Clock => {
             let now = chrono::Local::now();
@@ -432,6 +433,8 @@ struct GraphLayout {
     label_y: f32,
     value_px: f32,
     value_y: f32,
+    /// Axis label size; tracks the plot so labels stay proportionate.
+    axis_px: f32,
     x0: f32,
     x1: f32,
     y0: f32,
@@ -459,7 +462,9 @@ fn graph_layout(scale: f32) -> GraphLayout {
     let dy = (y0 - 240.0).abs().max((y1 - 240.0).abs());
     let fit = 2.0 * (SAFE_RADIUS * SAFE_RADIUS - dy * dy).max(0.0).sqrt();
     let width = (360.0 * s).min(fit);
-    GraphLayout { label_px, label_y, value_px, value_y, x0: 240.0 - width / 2.0, x1: 240.0 + width / 2.0, y0, y1 }
+    // Floor keeps labels legible on the panel at small plot sizes.
+    let axis_px = (20.0 * s).max(14.0);
+    GraphLayout { label_px, label_y, value_px, value_y, axis_px, x0: 240.0 - width / 2.0, x1: 240.0 + width / 2.0, y0, y1 }
 }
 
 /// Anti-aliased line through `pts` with round joins.
