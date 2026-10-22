@@ -15,6 +15,9 @@ if ! cmp -s dist/70-lumen.rules /etc/udev/rules.d/70-lumen.rules; then
   sudo udevadm trigger --subsystem-match=hidraw
 fi
 
+# Omarchy bar widget (hot-reloads; enable once with: omarchy plugin enable sfinkel.lumen --section right)
+install -Dm644 dist/omarchy-plugin/manifest.json dist/omarchy-plugin/Panel.qml -t "$HOME/.config/omarchy/plugins/sfinkel.lumen/"
+
 systemctl --user daemon-reload
 systemctl --user enable lumend.service
 systemctl --user restart lumend.service
