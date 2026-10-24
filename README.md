@@ -8,6 +8,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 | iCUE LINK AIO LCD (TITAN 360) | 480×480 screen layouts: coolant gauge, system bars, CPU/GPU rings, load, pump and fans, temperature graph, clock, image or GIF, and a cycle of any of these. It can also show the firmware screen. Any layout can sit on a background image, a GIF or your Omarchy wallpaper, dimmed so the readings stay legible |
 | Corsair K70 LUX / K70 LUX RGB | Per-key backlight. The model is detected automatically, and the keyboards can be swapped while the daemon runs. On the red-only K70 LUX, effects set brightness rather than color |
 | Logitech G502 HERO | Logo and DPI-strip colors (HID++ 2.0, feature 0x8070) |
+| Sensors | CPU temperature from k10temp/coretemp and CPU load from `/proc/stat`. GPU readings come from NVIDIA through NVML (loaded at runtime), otherwise from the amdgpu card with the most VRAM, so a discrete GPU wins over integrated graphics. Coolant temperature comes from the AIO |
 
 ## Pieces
 
