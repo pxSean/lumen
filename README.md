@@ -5,7 +5,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 | Device | What lumen does |
 |---|---|
 | Corsair iCUE LINK System Hub | Per-LED lighting on all fans and the pump head; fan and pump curves; sensor readout |
-| iCUE LINK AIO LCD (TITAN 360) | 480×480 screen layouts: coolant gauge, system bars, CPU/GPU rings, load, pump and fans, temperature graph, clock, image or GIF, and a cycle of any of these. It can also show the firmware screen. Any layout can sit on a background image, a GIF or your Omarchy wallpaper, dimmed so the readings stay legible |
+| iCUE LINK AIO LCD (TITAN 360) | 480×480 screen with named, configurable screens: graphs, bars and rings of any metrics, plus a coolant gauge, a pump-and-fans view and a clock. It can rotate through screens, show an image or GIF, or show the Corsair firmware screen. Any screen can sit on a background image, a GIF or your Omarchy wallpaper |
 | Corsair K70 LUX / K70 LUX RGB | Per-key backlight. The model is detected automatically, and the keyboards can be swapped while the daemon runs. On the red-only K70 LUX, effects set brightness rather than color |
 | Logitech G502 HERO | Logo and DPI-strip colors (HID++ 2.0, feature 0x8070) |
 | Sensors | CPU temperature from k10temp/coretemp and CPU load from `/proc/stat`. GPU readings come from NVIDIA through NVML (loaded at runtime), otherwise from the amdgpu card with the most VRAM, so a discrete GPU wins over integrated graphics. Coolant temperature comes from the AIO |
@@ -38,6 +38,42 @@ The most specific target wins: `ch<N>`, then `pump` or `fans`.
 - If coolant reaches 55 °C, every fan and the pump go to 100% until it drops below 50 °C.
 - If a curve's temperature sensor can't be read, that curve runs at 100%.
 - When the daemon stops (stop, crash or unwind), the hub goes back to its onboard fan curve, and the LCD, keyboard and mouse go back to their firmware lighting.
+
+## LCD screens
+
+A *screen* is a style plus its options:
+
+| Style | Options |
+|---|---|
+| `graph` | 1–4 metrics and a plot size. Metrics that share a unit share an auto-fitted axis; with mixed units, each line is scaled to that metric's own range |
+| `bars` | 1–4 metrics, one row each |
+| `rings` | An outer and an inner gauge metric, plus an optional footer metric |
+| `coolant`, `cooling`, `clock` | None |
+
+The metrics are:
+
+- **CPU:** `cpu.temp`, `cpu.load`
+- **Discrete GPU:** `gpu.temp`, `gpu.load`, `gpu.power`, `gpu.vram`
+- **Integrated GPU:** `igpu.temp`, `igpu.load`
+- **Memory:** `mem.used`
+- **Cooling:** `coolant.temp`, `pump.rpm`, `pump.duty`, `fans.rpm`, `fans.duty`
+
+`lumenctl metrics` lists them all with their current values.
+
+```
+lumenctl screen                                   # list screens (● showing, ↻ in cycle)
+lumenctl screen gpus --style graph --metrics gpu.temp,igpu.temp,cpu.temp --scale 1.2
+lumenctl screen rings --outer cpu.load --inner gpu.load --footer mem.used
+lumenctl screen gpus --rename temps    |    lumenctl screen temps --delete
+lumenctl lcd gpus                                 # show it; or: lumenctl lcd cycle --cycle coolant,gpus,load
+```
+
+In the TUI's Screen tab:
+
+- `e` edits the selected screen: ←→ changes the style, size or gauge metric, and space toggles a metric on or off.
+- `n` creates a new screen, `R` renames the selected one, and `x` deletes it.
+
+Configs written before screens existed (with `mode =` and `graph_scale =`) migrate automatically.
 
 ## LCD backgrounds
 

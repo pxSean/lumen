@@ -53,18 +53,18 @@ fn main() -> anyhow::Result<()> {
     while !term.load(Ordering::Relaxed) {
         if last_poll.elapsed() >= Duration::from_secs(1) {
             last_poll = Instant::now();
-            let (cpu, gpu) = (sensors.cpu(), sensors.gpu());
-            let (cpu_load, gpu_load) = (sensors.cpu_load(), sensors.gpu_load());
+            let mut metrics = sensors.metrics();
             let mut rt = shared.runtime();
-            rt.sensors.cpu = cpu;
-            rt.sensors.gpu = gpu;
-            rt.sensors.cpu_load = cpu_load;
-            rt.sensors.gpu_load = gpu_load;
-            let sample = rt.sensors;
-            rt.history.push_back(sample);
+            metrics.extend(state::cooling_metrics(&rt));
+            rt.sensors.cpu = metrics.get("cpu.temp").copied();
+            rt.sensors.gpu = metrics.get("gpu.temp").copied();
+            rt.sensors.cpu_load = metrics.get("cpu.load").copied();
+            rt.sensors.gpu_load = metrics.get("gpu.load").copied();
+            rt.history.push_back(metrics.clone());
             if rt.history.len() > state::HISTORY_LEN {
                 rt.history.pop_front();
             }
+            rt.metrics = metrics;
         }
         let theme_changed = last_theme_check.elapsed() >= Duration::from_secs(2)
             && shared.theme.read().unwrap().changed_on_disk();

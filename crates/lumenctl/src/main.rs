@@ -1,6 +1,8 @@
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand, ValueEnum};
-use lumen_ipc::{Client, Effect, FanSpec, LcdMode, Request, Status, TempSource};
+use lumen_ipc::{
+    Client, Effect, FanSpec, LcdSpec, METRICS, Request, SHOW_CYCLE, SHOW_IMAGE, Screen, Status, Style, TempSource, format_metric,
+};
 
 /// Control lumend: lighting, fans and the AIO screen.
 #[derive(Parser)]
@@ -64,8 +66,9 @@ enum Cmd {
     },
     /// Configure the AIO screen.
     Lcd {
-        mode: Option<Mode>,
-        /// Image or GIF for `image` mode.
+        /// A screen name (see `lumenctl screen`), or cycle, image, firmware, off.
+        show: Option<String>,
+        /// Image or GIF for `image`.
         #[arg(long)]
         image: Option<String>,
         #[arg(long)]
@@ -75,16 +78,13 @@ enum Cmd {
         /// Gauge color.
         #[arg(long)]
         accent: Option<String>,
-        /// Layouts for `cycle` mode, comma-separated (e.g. coolant,rings,graph).
+        /// Screens for `cycle`, comma-separated (e.g. coolant,rings,graph).
         #[arg(long, value_delimiter = ',')]
-        cycle: Option<Vec<Mode>>,
-        /// Seconds per layout in `cycle` mode.
+        cycle: Option<Vec<String>>,
+        /// Seconds per screen in `cycle`.
         #[arg(long)]
         interval: Option<u32>,
-        /// Size of the plot on the graph layout, 0.6 to 1.5 (default 1.0).
-        #[arg(long)]
-        graph_scale: Option<f32>,
-        /// Image or GIF behind every layout, or `wallpaper` for the current Omarchy wallpaper.
+        /// Image or GIF behind every screen, or `wallpaper` for the current Omarchy wallpaper.
         #[arg(long, conflicts_with = "no_background")]
         background: Option<String>,
         /// Remove the background image.
@@ -94,6 +94,37 @@ enum Cmd {
         #[arg(long)]
         dim: Option<u8>,
     },
+    /// List AIO screens, or create/edit one.
+    ///
+    /// `lumenctl screen temps --style graph --metrics cpu.temp,gpu.temp,igpu.temp`
+    /// `lumenctl screen rings --outer cpu.load --inner gpu.load --footer mem.used`
+    Screen {
+        name: Option<String>,
+        /// coolant, cooling, clock, rings, bars or graph (required when creating).
+        #[arg(long)]
+        style: Option<String>,
+        /// Graph/bars: 1-4 metric keys, comma-separated (see `lumenctl metrics`).
+        #[arg(long, value_delimiter = ',')]
+        metrics: Option<Vec<String>>,
+        /// Rings: outer gauge metric.
+        #[arg(long)]
+        outer: Option<String>,
+        /// Rings: inner gauge metric.
+        #[arg(long)]
+        inner: Option<String>,
+        /// Rings: footer metric, or `none`.
+        #[arg(long)]
+        footer: Option<String>,
+        /// Graph: plot size, 0.6 to 1.5.
+        #[arg(long)]
+        scale: Option<f32>,
+        #[arg(long)]
+        rename: Option<String>,
+        #[arg(long, conflicts_with_all = ["style", "metrics", "outer", "inner", "footer", "scale", "rename"])]
+        delete: bool,
+    },
+    /// List the metrics screens can show, with current values.
+    Metrics,
     /// Re-read config.toml and the Omarchy theme.
     Reload,
 }
@@ -126,39 +157,6 @@ impl From<Source> for TempSource {
             Source::Gpu => TempSource::Gpu,
             Source::Coolant => TempSource::Coolant,
             Source::Max => TempSource::Max,
-        }
-    }
-}
-
-#[derive(Clone, Copy, ValueEnum)]
-enum Mode {
-    Coolant,
-    System,
-    Rings,
-    Load,
-    Cooling,
-    Graph,
-    Clock,
-    Cycle,
-    Image,
-    Firmware,
-    Off,
-}
-
-impl From<Mode> for LcdMode {
-    fn from(m: Mode) -> Self {
-        match m {
-            Mode::Coolant => LcdMode::Coolant,
-            Mode::System => LcdMode::System,
-            Mode::Rings => LcdMode::Rings,
-            Mode::Load => LcdMode::Load,
-            Mode::Cooling => LcdMode::Cooling,
-            Mode::Graph => LcdMode::Graph,
-            Mode::Clock => LcdMode::Clock,
-            Mode::Cycle => LcdMode::Cycle,
-            Mode::Image => LcdMode::Image,
-            Mode::Firmware => LcdMode::Firmware,
-            Mode::Off => LcdMode::Off,
         }
     }
 }
@@ -233,20 +231,20 @@ fn main() -> anyhow::Result<()> {
             };
             client.request(&Request::SetFan { target, fan })?;
         }
-        Cmd::Lcd { mode, image, brightness, rotation, accent, cycle, interval, graph_scale, background, no_background, dim } => {
+        Cmd::Lcd { show, image, brightness, rotation, accent, cycle, interval, background, no_background, dim } => {
             let mut lcd = client.status()?.active.lcd;
-            if let Some(m) = mode {
-                lcd.mode = m.into();
-            }
             if let Some(path) = image {
                 let abs = std::fs::canonicalize(&path).with_context(|| format!("image {path}"))?;
                 lcd.image = Some(abs.to_string_lossy().into_owned());
-                if mode.is_none() {
-                    lcd.mode = LcdMode::Image;
+                if show.is_none() {
+                    lcd.show = SHOW_IMAGE.into();
                 }
             }
-            if lcd.mode == LcdMode::Image && lcd.image.is_none() {
-                bail!("image mode needs --image PATH");
+            if let Some(s) = show {
+                lcd.show = s;
+            }
+            if lcd.show == SHOW_IMAGE && lcd.image.is_none() {
+                bail!("image needs --image PATH");
             }
             if let Some(b) = brightness {
                 lcd.brightness = b.min(100);
@@ -258,10 +256,6 @@ fn main() -> anyhow::Result<()> {
                 lcd.accent = a;
             }
             if let Some(list) = cycle {
-                let list: Vec<LcdMode> = list.into_iter().map(LcdMode::from).collect();
-                if let Some(bad) = list.iter().find(|m| !m.cyclable()) {
-                    bail!("{bad:?} can't be part of a cycle");
-                }
                 lcd.cycle = list;
             }
             if let Some(secs) = interval {
@@ -280,10 +274,91 @@ fn main() -> anyhow::Result<()> {
             if let Some(d) = dim {
                 lcd.background_dim = d.min(100);
             }
-            if let Some(scale) = graph_scale {
-                lcd.graph_scale = scale.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+            client.request(&Request::SetLcd { lcd })?;
+        }
+        Cmd::Screen { name: None, .. } => {
+            let st = client.status()?;
+            print_screens(&st.active.lcd);
+        }
+        Cmd::Screen { name: Some(name), style, metrics, outer, inner, footer, scale, rename, delete } => {
+            let mut lcd = client.status()?.active.lcd;
+            if delete {
+                let before = lcd.screens.len();
+                lcd.screens.retain(|s| s.name != name);
+                if lcd.screens.len() == before {
+                    bail!("no screen named '{name}'");
+                }
+                if lcd.screens.is_empty() {
+                    bail!("can't delete the last screen");
+                }
+                lcd.cycle.retain(|c| *c != name);
+                if lcd.show == name {
+                    lcd.show = lcd.screens[0].name.clone();
+                }
+                return client.request(&Request::SetLcd { lcd }).map(|_| ());
+            }
+            let idx = match lcd.screens.iter().position(|s| s.name == name) {
+                Some(i) => i,
+                None => {
+                    let style = style.as_deref().context("new screen: --style is required")?;
+                    let st = Style::with_name(style, &Style::Clock).with_context(|| format!("unknown style '{style}'"))?;
+                    lcd.screens.push(Screen { name: name.clone(), style: st });
+                    lcd.screens.len() - 1
+                }
+            };
+            let screen = &mut lcd.screens[idx];
+            if let Some(style) = style.as_deref().filter(|s| *s != screen.style.name()) {
+                screen.style = Style::with_name(style, &screen.style).with_context(|| format!("unknown style '{style}'"))?;
+            }
+            match &mut screen.style {
+                Style::Graph { metrics: m, scale: sc } => {
+                    if let Some(v) = metrics {
+                        *m = v;
+                    }
+                    if let Some(v) = scale {
+                        *sc = v.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+                    }
+                }
+                Style::Bars { metrics: m } => {
+                    if let Some(v) = metrics {
+                        *m = v;
+                    }
+                }
+                Style::Rings { outer: o, inner: i, footer: f } => {
+                    if let Some(v) = outer {
+                        *o = v;
+                    }
+                    if let Some(v) = inner {
+                        *i = v;
+                    }
+                    if let Some(v) = footer {
+                        *f = (v != "none").then_some(v);
+                    }
+                }
+                _ => {
+                    if metrics.is_some() || outer.is_some() || inner.is_some() || footer.is_some() || scale.is_some() {
+                        bail!("the '{}' style has no options", screen.style.name());
+                    }
+                }
+            }
+            if let Some(new) = rename {
+                for c in lcd.cycle.iter_mut().filter(|c| **c == name) {
+                    *c = new.clone();
+                }
+                if lcd.show == name {
+                    lcd.show = new.clone();
+                }
+                lcd.screens[idx].name = new;
             }
             client.request(&Request::SetLcd { lcd })?;
+        }
+        Cmd::Metrics => {
+            let st = client.status()?;
+            for m in METRICS {
+                let value = format_metric(m.key, st.metrics.get(m.key).copied());
+                let value = if value == "--" { "unavailable".to_string() } else { value };
+                println!("  {:<14} {:<12} {}", m.key, value, m.description);
+            }
         }
         Cmd::Reload => {
             client.request(&Request::Reload)?;
@@ -324,16 +399,12 @@ fn print_status(st: &Status) {
             Some(e) => println!("LCD  error: {e}"),
             None => {
                 let lcd = &st.active.lcd;
-                println!(
-                    "LCD  {:?}  brightness {}%  rotation {}°  graph scale {:.1}×",
-                    lcd.mode, lcd.brightness, lcd.rotation, lcd.graph_scale
-                );
+                println!("LCD  showing {}  brightness {}%  rotation {}°", lcd.show, lcd.brightness, lcd.rotation);
                 if let Some(bg) = &lcd.background {
                     println!("     background {bg} (dim {}%)", lcd.background_dim);
                 }
-                if lcd.mode == LcdMode::Cycle {
-                    let list: Vec<String> = lcd.cycle.iter().map(|m| format!("{m:?}")).collect();
-                    println!("     cycling every {}s: {}", lcd.cycle_seconds, list.join(" → "));
+                if lcd.show == SHOW_CYCLE {
+                    println!("     cycling every {}s: {}", lcd.cycle_seconds, lcd.cycle.join(" → "));
                 }
             }
         }
@@ -354,6 +425,30 @@ fn print_status(st: &Status) {
         };
         println!("  {t:<13} {desc}");
     }
+}
+
+fn describe_style(style: &Style) -> String {
+    match style {
+        Style::Graph { metrics, scale } => format!("graph  {}  (size {scale:.1}×)", metrics.join(", ")),
+        Style::Bars { metrics } => format!("bars   {}", metrics.join(", ")),
+        Style::Rings { outer, inner, footer } => format!(
+            "rings  outer {outer}, inner {inner}{}",
+            footer.as_ref().map_or(String::new(), |f| format!(", footer {f}"))
+        ),
+        other => other.name().to_string(),
+    }
+}
+
+fn print_screens(lcd: &LcdSpec) {
+    for s in &lcd.screens {
+        let marks = format!(
+            "{}{}",
+            if s.name == lcd.show { "●" } else { " " },
+            if lcd.cycle.contains(&s.name) { "↻" } else { " " }
+        );
+        println!("{marks} {:<12} {}", s.name, describe_style(&s.style));
+    }
+    println!("\n● showing   ↻ in cycle (every {}s)", lcd.cycle_seconds);
 }
 
 fn describe_effect(e: &Effect) -> String {

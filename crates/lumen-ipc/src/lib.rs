@@ -3,6 +3,7 @@
 //! The daemon listens on `$XDG_RUNTIME_DIR/lumen.sock`. Each request is one line of JSON
 //! ([`Request`]), answered by one line of JSON ([`Response`]).
 
+pub mod metrics;
 pub mod model;
 
 use std::io::{BufRead, BufReader, Write};
@@ -13,6 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
+pub use metrics::*;
 pub use model::*;
 
 pub fn socket_path() -> PathBuf {
@@ -54,6 +56,9 @@ pub struct Status {
     pub profile: String,
     pub profiles: Vec<String>,
     pub sensors: Sensors,
+    /// Current value of every available metric (see [`metrics::METRICS`]).
+    #[serde(default)]
+    pub metrics: std::collections::BTreeMap<String, f32>,
     /// True while the coolant safety override is forcing all fans and pumps to 100%.
     pub critical: bool,
     pub theme: ThemeInfo,

@@ -28,16 +28,16 @@ Panel {
   readonly property var coolant: st ? st.sensors.coolant : null
   readonly property bool critical: !!(st && st.critical)
 
-  readonly property var layouts: [
-    { mode: "coolant", label: "Coolant" },
-    { mode: "rings", label: "Rings" },
-    { mode: "load", label: "Load" },
-    { mode: "cooling", label: "Cooling" },
-    { mode: "graph", label: "Graph" },
-    { mode: "clock", label: "Clock" },
-    { mode: "cycle", label: "Cycle" },
-    { mode: "firmware", label: "Corsair" }
-  ]
+  // Configured screens, then cycle and the firmware screen.
+  readonly property var layouts: {
+    var out = []
+    var screens = st && st.active.lcd.screens ? st.active.lcd.screens : []
+    for (var i = 0; i < screens.length; i++)
+      out.push({ mode: screens[i].name, label: screens[i].name.charAt(0).toUpperCase() + screens[i].name.slice(1) })
+    out.push({ mode: "cycle", label: "Cycle" })
+    out.push({ mode: "firmware", label: "Corsair" })
+    return out
+  }
 
   // Presets apply to the `*` target; per-device overrides in the TUI still win.
   readonly property var lightingPresets: [
@@ -307,7 +307,7 @@ Panel {
           columns: 4
           model: root.layouts
           labelOf: function(l) { return l.label }
-          isActive: function(l) { return root.st && root.st.active.lcd.mode === l.mode }
+          isActive: function(l) { return root.st && root.st.active.lcd.show === l.mode }
           onPicked: function(l) { root.run(["lcd", l.mode]) }
         }
 

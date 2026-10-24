@@ -2,7 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use lumen_ipc::{Client, Effect, FanSpec, LcdMode, Request, Status, TempSource, ZoneStatus};
+use lumen_ipc::{
+    Client, Effect, FanSpec, LcdSpec, MAX_SERIES, METRICS, Request, SHOW_CYCLE, SHOW_FIRMWARE, SHOW_IMAGE, SHOW_OFF, Screen, Status, Style,
+    TempSource, ZoneStatus,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,6 +33,8 @@ pub enum InputKind {
     HexColor,
     ImagePath,
     BackgroundPath,
+    NewScreen,
+    RenameScreen(String),
     NewProfile,
 }
 
@@ -49,6 +54,9 @@ pub struct App {
     pub fan_sel: usize,
     pub point_sel: usize,
     pub lcd_sel: usize,
+    /// Screen tab: editing the selected screen's options instead of picking screens.
+    pub lcd_edit: bool,
+    pub opt_sel: usize,
     pub profile_sel: usize,
     pub input: Option<Input>,
     pub quit: bool,
@@ -103,6 +111,8 @@ impl App {
             fan_sel: 0,
             point_sel: 0,
             lcd_sel: 0,
+            lcd_edit: false,
+            opt_sel: 0,
             profile_sel: 0,
             input: None,
             quit: false,
@@ -236,6 +246,10 @@ impl App {
         if self.input.is_some() {
             return self.on_input_key(key);
         }
+        if self.tab == Tab::Screen && self.lcd_edit && matches!(key.code, KeyCode::Esc | KeyCode::Char('e')) {
+            self.lcd_edit = false;
+            return;
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
@@ -282,7 +296,7 @@ impl App {
                             Ok(abs) => {
                                 if let Some(mut lcd) = self.status.as_ref().map(|s| s.active.lcd.clone()) {
                                     lcd.image = Some(abs.to_string_lossy().into_owned());
-                                    lcd.mode = LcdMode::Image;
+                                    lcd.show = SHOW_IMAGE.into();
                                     self.send(Request::SetLcd { lcd });
                                 }
                             }
@@ -309,6 +323,33 @@ impl App {
                         }
                     }
                     InputKind::NewProfile => self.send(Request::SaveProfileAs { name: value }),
+                    InputKind::NewScreen => {
+                        let Some(mut lcd) = self.lcd() else { return };
+                        // Start from the selected screen's style so "copy and tweak" is one step.
+                        let style = match self.lcd_entries(&lcd).get(self.lcd_sel) {
+                            Some(LcdEntry::Screen(n)) => lcd.screen(n).map(|s| s.style.clone()),
+                            _ => None,
+                        }
+                        .unwrap_or_else(|| Style::with_name("graph", &Style::Clock).unwrap());
+                        lcd.screens.push(Screen { name: value, style });
+                        self.lcd_sel = lcd.screens.len() - 1;
+                        self.lcd_edit = true;
+                        self.opt_sel = 0;
+                        self.send(Request::SetLcd { lcd });
+                    }
+                    InputKind::RenameScreen(old) => {
+                        let Some(mut lcd) = self.lcd() else { return };
+                        for c in lcd.cycle.iter_mut().filter(|c| **c == old) {
+                            *c = value.clone();
+                        }
+                        if lcd.show == old {
+                            lcd.show = value.clone();
+                        }
+                        if let Some(s) = lcd.screens.iter_mut().find(|s| s.name == old) {
+                            s.name = value;
+                        }
+                        self.send(Request::SetLcd { lcd });
+                    }
                 }
             }
             _ => {}
@@ -487,23 +528,78 @@ impl App {
 
     // ---- Screen ---------------------------------------------------------------------------
 
+    fn lcd(&self) -> Option<LcdSpec> {
+        self.status.as_ref().map(|s| s.active.lcd.clone())
+    }
+
+    /// Screens first, then the special modes, in list order.
+    pub fn lcd_entries(&self, lcd: &LcdSpec) -> Vec<LcdEntry> {
+        lcd.screens
+            .iter()
+            .map(|s| LcdEntry::Screen(s.name.clone()))
+            .chain([SHOW_CYCLE, SHOW_IMAGE, SHOW_FIRMWARE, SHOW_OFF].map(LcdEntry::Special))
+            .collect()
+    }
+
     fn screen_key(&mut self, key: KeyEvent) {
-        let Some(mut lcd) = self.status.as_ref().map(|s| s.active.lcd.clone()) else { return };
-        let n = LcdMode::ALL.len();
+        let Some(mut lcd) = self.lcd() else { return };
+        let entries = self.lcd_entries(&lcd);
+        let n = entries.len();
+        self.lcd_sel = self.lcd_sel.min(n - 1);
+        let selected = match &entries[self.lcd_sel] {
+            LcdEntry::Screen(name) => Some(name.clone()),
+            LcdEntry::Special(_) => None,
+        };
+        if self.lcd_edit {
+            if let Some(name) = selected {
+                self.screen_edit_key(key, lcd, &name);
+            } else {
+                self.lcd_edit = false;
+            }
+            return;
+        }
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => self.lcd_sel = (self.lcd_sel + n - 1) % n,
             KeyCode::Down | KeyCode::Char('j') => self.lcd_sel = (self.lcd_sel + 1) % n,
-            KeyCode::Char(' ') => {
-                let mode = LcdMode::ALL[self.lcd_sel];
-                if !mode.cyclable() {
-                    return self.flash("only rendered layouts can be part of the cycle".into());
+            KeyCode::Char('e') => match selected {
+                Some(_) => {
+                    self.lcd_edit = true;
+                    self.opt_sel = 0;
                 }
-                if let Some(i) = lcd.cycle.iter().position(|m| *m == mode) {
+                None => self.flash("pick a screen to edit".into()),
+            },
+            KeyCode::Char('n') => {
+                self.input = Some(Input { kind: InputKind::NewScreen, prompt: "New screen name", buf: String::new() });
+            }
+            KeyCode::Char('R') => match selected {
+                Some(name) => {
+                    self.input = Some(Input { kind: InputKind::RenameScreen(name.clone()), prompt: "Rename screen", buf: name })
+                }
+                None => self.flash("only screens can be renamed".into()),
+            },
+            KeyCode::Char('x') | KeyCode::Delete => match selected {
+                Some(name) if lcd.screens.len() > 1 => {
+                    lcd.screens.retain(|s| s.name != name);
+                    lcd.cycle.retain(|c| *c != name);
+                    if lcd.show == name {
+                        lcd.show = lcd.screens[0].name.clone();
+                    }
+                    self.send(Request::SetLcd { lcd });
+                }
+                Some(_) => self.flash("can't delete the last screen".into()),
+                None => self.flash("only screens can be deleted".into()),
+            },
+            KeyCode::Char(' ') => {
+                let Some(name) = selected else {
+                    return self.flash("only screens can be part of the cycle".into());
+                };
+                if let Some(i) = lcd.cycle.iter().position(|c| *c == name) {
                     lcd.cycle.remove(i);
                 } else {
-                    // Keep the cycle in menu order.
-                    lcd.cycle.push(mode);
-                    lcd.cycle.sort_by_key(|m| LcdMode::ALL.iter().position(|a| a == m));
+                    // Keep the cycle in list order.
+                    lcd.cycle.push(name);
+                    let order: Vec<String> = lcd.screens.iter().map(|s| s.name.clone()).collect();
+                    lcd.cycle.sort_by_key(|c| order.iter().position(|o| o == c));
                 }
                 self.send(Request::SetLcd { lcd });
             }
@@ -513,20 +609,27 @@ impl App {
                 self.send(Request::SetLcd { lcd });
             }
             KeyCode::Enter => {
-                let mode = LcdMode::ALL[self.lcd_sel];
-                if mode == LcdMode::Image && lcd.image.is_none() {
+                let show = match &entries[self.lcd_sel] {
+                    LcdEntry::Screen(n) => n.clone(),
+                    LcdEntry::Special(s) => s.to_string(),
+                };
+                if show == SHOW_IMAGE && lcd.image.is_none() {
                     self.input = Some(Input { kind: InputKind::ImagePath, prompt: "Image or GIF path", buf: String::new() });
                     return;
                 }
-                lcd.mode = mode;
+                lcd.show = show;
                 self.send(Request::SetLcd { lcd });
             }
             KeyCode::Char('<') | KeyCode::Char('>') | KeyCode::Char(',') | KeyCode::Char('.') => {
-                let step = if matches!(key.code, KeyCode::Char('>') | KeyCode::Char('.')) { 0.1 } else { -0.1 };
-                // Round to one decimal so repeated steps don't drift.
-                let next = ((lcd.graph_scale + step) * 10.0).round() / 10.0;
-                lcd.graph_scale = next.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
-                self.send(Request::SetLcd { lcd });
+                let up = matches!(key.code, KeyCode::Char('>') | KeyCode::Char('.'));
+                let target = selected.as_deref();
+                match lcd.screens.iter_mut().find(|s| Some(s.name.as_str()) == target) {
+                    Some(Screen { style: Style::Graph { scale, .. }, .. }) => {
+                        *scale = step_scale(*scale, up);
+                        self.send(Request::SetLcd { lcd });
+                    }
+                    _ => self.flash("< > sizes a graph screen; select one first".into()),
+                }
             }
             KeyCode::Char('b') => {
                 self.input = Some(Input {
@@ -571,6 +674,66 @@ impl App {
         }
     }
 
+    /// Options editor for one screen: style, then style-specific rows.
+    fn screen_edit_key(&mut self, key: KeyEvent, mut lcd: LcdSpec, name: &str) {
+        let Some(idx) = lcd.screens.iter().position(|s| s.name == name) else { return };
+        let rows = edit_rows(&lcd.screens[idx].style);
+        let n = rows.len();
+        self.opt_sel = self.opt_sel.min(n - 1);
+        let left = matches!(key.code, KeyCode::Left | KeyCode::Char('h'));
+        let right = matches!(key.code, KeyCode::Right | KeyCode::Char('l'));
+        let toggle = matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter);
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => return self.opt_sel = (self.opt_sel + n - 1) % n,
+            KeyCode::Down | KeyCode::Char('j') => return self.opt_sel = (self.opt_sel + 1) % n,
+            _ => {}
+        }
+        if !(left || right || toggle) {
+            return;
+        }
+        let style = &mut lcd.screens[idx].style;
+        match (rows[self.opt_sel], style) {
+            (EditRow::Style, style) if left || right => {
+                let names = Style::NAMES;
+                let i = names.iter().position(|n| *n == style.name()).unwrap_or(0);
+                let next = names[(i + if right { 1 } else { names.len() - 1 }) % names.len()];
+                *style = Style::with_name(next, style).expect("known style");
+            }
+            (EditRow::Size, Style::Graph { scale, .. }) if left || right => *scale = step_scale(*scale, right),
+            (EditRow::Metric(key), Style::Graph { metrics, .. } | Style::Bars { metrics }) if toggle => {
+                if let Some(i) = metrics.iter().position(|m| m == key) {
+                    if metrics.len() == 1 {
+                        return self.flash("a screen needs at least one metric".into());
+                    }
+                    metrics.remove(i);
+                } else if metrics.len() >= MAX_SERIES {
+                    return self.flash(format!("at most {MAX_SERIES} metrics per screen"));
+                } else {
+                    metrics.push(key.to_string());
+                }
+            }
+            (row @ (EditRow::Outer | EditRow::Inner | EditRow::Footer), Style::Rings { outer, inner, footer })
+                if left || right =>
+            {
+                let keys: Vec<&str> = METRICS.iter().map(|m| m.key).collect();
+                let cycle = |cur: Option<&str>, allow_none: bool| -> Option<String> {
+                    // `None` sits at the end of the list for the footer.
+                    let len = keys.len() + allow_none as usize;
+                    let i = cur.and_then(|c| keys.iter().position(|k| *k == c)).unwrap_or(keys.len());
+                    let j = (i + if right { 1 } else { len - 1 }) % len;
+                    keys.get(j).map(|k| k.to_string())
+                };
+                match row {
+                    EditRow::Outer => *outer = cycle(Some(outer), false).unwrap(),
+                    EditRow::Inner => *inner = cycle(Some(inner), false).unwrap(),
+                    _ => *footer = cycle(footer.as_deref(), true),
+                }
+            }
+            _ => return,
+        }
+        self.send(Request::SetLcd { lcd });
+    }
+
     // ---- Profiles -------------------------------------------------------------------------
 
     fn profiles_key(&mut self, key: KeyEvent) {
@@ -596,6 +759,42 @@ impl App {
             _ => {}
         }
     }
+}
+
+pub enum LcdEntry {
+    Screen(String),
+    Special(&'static str),
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum EditRow {
+    Style,
+    Size,
+    Outer,
+    Inner,
+    Footer,
+    Metric(&'static str),
+}
+
+/// The editable rows for a style, in display order.
+pub fn edit_rows(style: &Style) -> Vec<EditRow> {
+    let mut rows = vec![EditRow::Style];
+    match style {
+        Style::Graph { .. } => {
+            rows.push(EditRow::Size);
+            rows.extend(METRICS.iter().map(|m| EditRow::Metric(m.key)));
+        }
+        Style::Bars { .. } => rows.extend(METRICS.iter().map(|m| EditRow::Metric(m.key))),
+        Style::Rings { .. } => rows.extend([EditRow::Outer, EditRow::Inner, EditRow::Footer]),
+        _ => {}
+    }
+    rows
+}
+
+fn step_scale(scale: f32, up: bool) -> f32 {
+    // Round to one decimal so repeated steps don't drift.
+    let next = ((scale + if up { 0.1 } else { -0.1 }) * 10.0).round() / 10.0;
+    next.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX)
 }
 
 fn shellexpand_home(p: &str) -> String {

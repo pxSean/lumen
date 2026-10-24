@@ -1,6 +1,6 @@
 //! Rendering. Colors come from the active Omarchy theme as reported by lumend.
 
-use lumen_ipc::{Effect, FanSpec, LcdMode, Status, TempSource};
+use lumen_ipc::{Effect, FanSpec, Status, Style as ScreenStyle, TempSource, format_metric, metric};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -10,7 +10,7 @@ use ratatui::widgets::{
     Axis, Block, BorderType, Borders, Chart, Clear, Dataset, Gauge, GraphType, List, ListItem, ListState, Paragraph, Tabs,
 };
 
-use crate::app::{App, Tab, primary_color, speed_of};
+use crate::app::{App, EditRow, LcdEntry, Tab, edit_rows, primary_color, speed_of};
 
 pub struct Palette {
     pub fg: Color,
@@ -133,7 +133,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     let help = match app.tab {
         Tab::Lighting => "↑↓ target  ←→ effect  c color  # hex  +/- speed  i inherit",
         Tab::Fans => "↑↓ target  m fixed/curve  [ ] point  ←→ temp  +/- duty  a add  x del  s source  i inherit",
-        Tab::Screen => "↑↓ mode  ⏎ apply  space toggle ↻  [ ] cycle secs  < > graph size  b/B backdrop  d/D dim  +/- brightness  r rotate  c accent  o image",
+        Tab::Screen if app.lcd_edit => "↑↓ option  ←→ change  space toggle metric  e/esc done",
+        Tab::Screen => "↑↓ select  ⏎ show  e edit  n new  R rename  x delete  space ↻  [ ] cycle secs  < > graph size  b/B backdrop  d/D dim  +/- brightness  r rotate  c accent  o image",
         Tab::Profiles => "↑↓ select  ⏎ use  n save as  d delete",
     };
     let line = match app.flash_text() {
@@ -347,40 +348,66 @@ fn draw_fans(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
     }
 }
 
+fn describe_style(style: &ScreenStyle) -> String {
+    let labels = |m: &[String]| m.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ");
+    match style {
+        ScreenStyle::Graph { metrics, scale } => format!("graph · {} · {scale:.1}×", labels(metrics)),
+        ScreenStyle::Bars { metrics } => format!("bars · {}", labels(metrics)),
+        ScreenStyle::Rings { outer, inner, .. } => format!("rings · {outer} / {inner}"),
+        other => other.name().to_string(),
+    }
+}
+
 fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
     let Some(st) = app.status.as_ref() else { return };
     let lcd = &st.active.lcd;
-    let [list_area, detail] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(area);
-    let describe = |m: LcdMode| match m {
-        LcdMode::Coolant => "Coolant gauge",
-        LcdMode::System => "CPU / GPU / coolant bars",
-        LcdMode::Rings => "CPU & GPU rings",
-        LcdMode::Load => "CPU & GPU load",
-        LcdMode::Cooling => "Pump & fans",
-        LcdMode::Graph => "Temperature graph",
-        LcdMode::Clock => "Clock",
-        LcdMode::Cycle => "Cycle layouts",
-        LcdMode::Image => "Image / GIF",
-        LcdMode::Firmware => "Corsair firmware screen",
-        LcdMode::Off => "Off",
-    };
-    let items: Vec<ListItem> = LcdMode::ALL
+    let [list_area, detail] = Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
+    let entries = app.lcd_entries(lcd);
+    let items: Vec<ListItem> = entries
         .iter()
-        .map(|m| {
-            let active = *m == lcd.mode;
-            let in_cycle = lcd.cycle.contains(m);
+        .map(|e| {
+            let (name, desc, in_cycle) = match e {
+                LcdEntry::Screen(n) => {
+                    let desc = lcd.screen(n).map_or(String::new(), |s| describe_style(&s.style));
+                    (n.clone(), desc, lcd.cycle.contains(n))
+                }
+                LcdEntry::Special(s) => {
+                    let desc = match *s {
+                        "cycle" => format!("rotate ↻ screens every {}s", lcd.cycle_seconds),
+                        "image" => "image / GIF only".into(),
+                        "firmware" => "Corsair firmware screen".into(),
+                        _ => "screen off".into(),
+                    };
+                    (s.to_string(), desc, false)
+                }
+            };
+            let active = name == lcd.show;
             ListItem::new(Line::from(vec![
                 Span::styled(if active { "● " } else { "  " }, Style::default().fg(p.accent)),
-                Span::styled(format!("{:<26}", describe(*m)), Style::default().fg(if active { p.fg } else { p.muted })),
-                Span::styled(if in_cycle { "↻" } else { "" }, Style::default().fg(p.muted)),
+                Span::styled(if in_cycle { "↻ " } else { "  " }, Style::default().fg(p.muted)),
+                Span::styled(format!("{name:<11} "), Style::default().fg(if active { p.fg } else { p.muted }).bold()),
+                Span::styled(desc, Style::default().fg(p.muted)),
             ]))
         })
         .collect();
+    let sel = app.lcd_sel.min(entries.len().saturating_sub(1));
     f.render_stateful_widget(
-        List::new(items).block(block("AIO screen", p, true)).highlight_style(Style::default().bg(p.sel_bg).bold()),
+        List::new(items)
+            .block(block("AIO screens", p, !app.lcd_edit))
+            .highlight_style(Style::default().bg(p.sel_bg).bold()),
         list_area,
-        &mut list_state(app.lcd_sel),
+        &mut list_state(sel),
     );
+
+    let screen = match entries.get(sel) {
+        Some(LcdEntry::Screen(n)) => lcd.screen(n),
+        _ => None,
+    };
+    if app.lcd_edit
+        && let Some(screen) = screen
+    {
+        return draw_screen_editor(f, app, p, detail, st, screen);
+    }
 
     let [g, info] = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(detail);
     f.render_widget(
@@ -395,35 +422,101 @@ fn draw_screen(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
         Some(l) => format!("error: {}", l.error.as_deref().unwrap_or("?")),
         None => "not detected".into(),
     };
-    let lines = vec![
-        Line::from(vec![Span::styled("Panel     ", Style::default().fg(p.muted)), Span::raw(conn)]),
-        Line::from(vec![Span::styled("Rotation  ", Style::default().fg(p.muted)), Span::raw(format!("{}°", lcd.rotation))]),
-        Line::from(vec![
-            Span::styled("Cycle     ", Style::default().fg(p.muted)),
-            Span::raw(format!("every {}s (↻ marks layouts in the cycle)", lcd.cycle_seconds)),
-        ]),
-        Line::from(vec![
-            Span::styled("Backdrop  ", Style::default().fg(p.muted)),
-            Span::raw(match &lcd.background {
-                Some(bg) => format!("{bg}  (dim {}%, d/D to change)", lcd.background_dim),
-                None => "theme color  (b to set an image or 'wallpaper')".into(),
-            }),
-        ]),
-        Line::from(vec![
-            Span::styled("Graph     ", Style::default().fg(p.muted)),
-            Span::raw(format!("plot size {:.1}×  (< > to change)", lcd.graph_scale)),
-        ]),
+    let row = |k: &'static str, v: String| Line::from(vec![Span::styled(k, Style::default().fg(p.muted)), Span::raw(v)]);
+    let mut lines = vec![
+        row("Panel     ", conn),
+        row("Rotation  ", format!("{}°", lcd.rotation)),
         Line::from(vec![
             Span::styled("Accent    ", Style::default().fg(p.muted)),
             swatch(resolve(Some(st), &lcd.accent)),
             Span::raw(format!(" {}", lcd.accent)),
         ]),
-        Line::from(vec![
-            Span::styled("Image     ", Style::default().fg(p.muted)),
-            Span::raw(lcd.image.clone().unwrap_or_else(|| "—".into())),
-        ]),
+        row(
+            "Backdrop  ",
+            match &lcd.background {
+                Some(bg) => format!("{bg}  (dim {}%, d/D)", lcd.background_dim),
+                None => "theme color  (b: image or 'wallpaper')".into(),
+            },
+        ),
+        row("Image     ", lcd.image.clone().unwrap_or_else(|| "—".into())),
     ];
+    if let Some(screen) = screen {
+        lines.push(Line::raw(""));
+        lines.push(row("Screen    ", format!("{}  ({})", screen.name, screen.style.name())));
+        for key in screen.style.metrics() {
+            let info = metric(&key);
+            lines.push(row(
+                "          ",
+                format!(
+                    "{:<12} {:>6}  {}",
+                    key,
+                    format_metric(&key, st.metrics.get(&key).copied()),
+                    info.map_or("", |m| m.description)
+                ),
+            ));
+        }
+        lines.push(Line::from(Span::styled("          e to edit", Style::default().fg(p.muted).italic())));
+    }
     f.render_widget(Paragraph::new(lines).block(block("Settings", p, false)), info);
+}
+
+/// Options for one screen: style, size (graph), and metric picks.
+fn draw_screen_editor(f: &mut Frame, app: &App, p: &Palette, area: Rect, st: &Status, screen: &lumen_ipc::Screen) {
+    let rows = edit_rows(&screen.style);
+    let picked = screen.style.metrics();
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let line = match (row, &screen.style) {
+                (EditRow::Style, style) => vec![
+                    Span::styled("Style   ", Style::default().fg(p.muted)),
+                    Span::styled(format!("◂ {} ▸", style.name()), Style::default().fg(p.accent).bold()),
+                ],
+                (EditRow::Size, ScreenStyle::Graph { scale, .. }) => vec![
+                    Span::styled("Size    ", Style::default().fg(p.muted)),
+                    Span::raw(format!("◂ {scale:.1}× ▸")),
+                ],
+                (EditRow::Outer | EditRow::Inner | EditRow::Footer, ScreenStyle::Rings { outer, inner, footer }) => {
+                    let (label, value) = match row {
+                        EditRow::Outer => ("Outer   ", Some(outer)),
+                        EditRow::Inner => ("Inner   ", Some(inner)),
+                        _ => ("Footer  ", footer.as_ref()),
+                    };
+                    let v = value.map_or("none".to_string(), |k| {
+                        format!("{k}  {}", format_metric(k, st.metrics.get(k).copied()))
+                    });
+                    vec![Span::styled(label, Style::default().fg(p.muted)), Span::raw(format!("◂ {v} ▸"))]
+                }
+                (EditRow::Metric(key), _) => {
+                    let order = picked.iter().position(|m| m == key);
+                    let mark = order.map_or("[ ] ".to_string(), |i| format!("[{}] ", i + 1));
+                    let info = metric(key);
+                    let value = format_metric(key, st.metrics.get(*key).copied());
+                    vec![
+                        Span::styled(mark, Style::default().fg(if order.is_some() { p.accent } else { p.muted })),
+                        Span::styled(format!("{key:<13}"), Style::default().fg(if order.is_some() { p.fg } else { p.muted })),
+                        Span::styled(format!("{value:>6}  "), Style::default().fg(p.fg)),
+                        Span::styled(info.map_or("", |m| m.description), Style::default().fg(p.muted)),
+                    ]
+                }
+                _ => vec![],
+            };
+            ListItem::new(Line::from(line))
+        })
+        .collect();
+    let title = format!("Edit '{}'", screen.name);
+    let hint = match &screen.style {
+        ScreenStyle::Graph { .. } | ScreenStyle::Bars { .. } => " (numbers = series order)",
+        _ if rows.len() == 1 => " (this style has no options)",
+        _ => "",
+    };
+    f.render_stateful_widget(
+        List::new(items)
+            .block(block(&format!("{title}{hint}"), p, true))
+            .highlight_style(Style::default().bg(p.sel_bg).bold()),
+        area,
+        &mut list_state(app.opt_sel.min(rows.len().saturating_sub(1))),
+    );
 }
 
 fn draw_profiles(f: &mut Frame, app: &App, p: &Palette, area: Rect) {

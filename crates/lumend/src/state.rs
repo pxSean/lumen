@@ -1,5 +1,6 @@
 //! State shared between the device workers and the IPC server.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +28,10 @@ pub const HISTORY_LEN: usize = 180;
 #[derive(Default)]
 pub struct Runtime {
     pub sensors: Sensors,
-    pub history: std::collections::VecDeque<Sensors>,
+    /// Latest value of every available metric, refreshed once a second.
+    pub metrics: BTreeMap<String, f32>,
+    /// One metrics snapshot per second, oldest first.
+    pub history: std::collections::VecDeque<BTreeMap<String, f32>>,
     pub critical: bool,
     pub devices: Vec<DeviceStatus>,
     pub lcd: Option<LcdStatus>,
@@ -47,6 +51,9 @@ pub fn load_config() -> anyhow::Result<Config> {
             let mut cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
             if !cfg.profiles.contains_key(&cfg.active_profile) {
                 cfg.profiles.entry(cfg.active_profile.clone()).or_default();
+            }
+            for p in cfg.profiles.values_mut() {
+                p.lcd.normalize();
             }
             Ok(cfg)
         }
@@ -128,6 +135,7 @@ impl Shared {
             profile,
             profiles,
             sensors: rt.sensors,
+            metrics: rt.metrics.clone(),
             critical: rt.critical,
             theme: self.theme.read().unwrap().info(),
             devices: rt.devices.clone(),
@@ -143,6 +151,26 @@ impl Shared {
             None => rt.devices.push(status),
         }
     }
+}
+
+/// Coolant, pump and fan metrics derived from the hub's latest status.
+pub fn cooling_metrics(rt: &Runtime) -> BTreeMap<String, f32> {
+    let mut m = BTreeMap::new();
+    if let Some(t) = rt.sensors.coolant {
+        m.insert("coolant.temp".into(), t);
+    }
+    let zones: Vec<_> = rt.devices.iter().flat_map(|d| &d.zones).collect();
+    if let Some(p) = zones.iter().find(|z| z.kind == "aio" || z.kind == "pump") {
+        p.rpm.map(|v| m.insert("pump.rpm".into(), v as f32));
+        p.duty.map(|v| m.insert("pump.duty".into(), v as f32));
+    }
+    let fans: Vec<_> = zones.iter().filter(|z| z.kind == "fan" && z.rpm.is_some()).collect();
+    if !fans.is_empty() {
+        let n = fans.len() as f32;
+        m.insert("fans.rpm".into(), fans.iter().filter_map(|z| z.rpm).map(f32::from).sum::<f32>() / n);
+        m.insert("fans.duty".into(), fans.iter().filter_map(|z| z.duty).map(f32::from).sum::<f32>() / n);
+    }
+    m
 }
 
 /// Most-specific match first; falls back to the theme color.

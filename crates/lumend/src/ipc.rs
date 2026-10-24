@@ -97,6 +97,7 @@ fn handle(req: Request, shared: &Shared) -> anyhow::Result<Response> {
             Ok(())
         })?,
         Request::SetLcd { lcd } => shared.edit(|c| {
+            lcd.validate().map_err(anyhow::Error::msg)?;
             ensure!([0, 90, 180, 270].contains(&lcd.rotation), "rotation must be 0, 90, 180 or 270");
             if let Some(path) = &lcd.image {
                 ensure!(std::path::Path::new(path).is_file(), "image not found: {path}");

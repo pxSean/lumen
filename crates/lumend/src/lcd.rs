@@ -12,17 +12,17 @@ use image::imageops::FilterType;
 use image::{AnimationDecoder, DynamicImage, RgbImage};
 use lumen_hid::Rgb;
 use lumen_hid::icue_lcd::{HEIGHT, Lcd, Rotation, WIDTH};
-use lumen_ipc::{LcdMode, LcdSpec, LcdStatus, Sensors, ZoneStatus};
+use std::collections::BTreeMap;
+
+use lumen_ipc::{
+    LcdSpec, LcdStatus, MAX_SERIES, SHOW_CYCLE, SHOW_FIRMWARE, SHOW_IMAGE, SHOW_OFF, Screen, Style, Unit, format_metric, metric,
+};
 
 use crate::effects::lerp;
 use crate::state::{HISTORY_LEN, Runtime, Shared};
 use crate::theme::Theme;
 
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
-const GAUGE_MIN: f32 = 20.0;
-const GAUGE_MAX: f32 = 60.0;
-const RING_MIN: f32 = 30.0;
-const RING_MAX: f32 = 95.0;
 
 pub fn run(shared: Arc<Shared>) {
     let fonts = Fonts::load();
@@ -72,7 +72,6 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
     let mut frame_idx = 0;
     let mut background: Vec<(RgbImage, Duration)> = Vec::new();
     let mut bg_idx = 0;
-    let mut released = false;
 
     while shared.running() {
         if shared.generation() != generation {
@@ -80,12 +79,11 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
             spec = shared.active_profile().lcd;
             frames.clear();
             frame_idx = 0;
-            if spec.mode == LcdMode::Firmware {
+            let show = spec.show.as_str();
+            if show == SHOW_FIRMWARE {
                 lcd.release()?;
-                released = true;
             } else {
-                released = false;
-                let brightness = if spec.mode == LcdMode::Off { 0 } else { spec.brightness };
+                let brightness = if show == SHOW_OFF { 0 } else { spec.brightness };
                 lcd.set_brightness(brightness)?;
                 lcd.set_rotation(match spec.rotation {
                     90 => Rotation::R90,
@@ -96,14 +94,14 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
             }
             background.clear();
             bg_idx = 0;
-            if !matches!(spec.mode, LcdMode::Image | LcdMode::Off | LcdMode::Firmware) {
+            if !matches!(show, SHOW_IMAGE | SHOW_OFF | SHOW_FIRMWARE) {
                 let theme = shared.theme.read().unwrap().clone();
                 background = load_background(&spec, &theme).unwrap_or_else(|e| {
                     log::error!("LCD background: {e:#}");
                     Vec::new()
                 });
             }
-            if spec.mode == LcdMode::Image {
+            if show == SHOW_IMAGE {
                 frames = match spec.image.as_deref().map(load_image) {
                     Some(Ok(f)) => f,
                     Some(Err(e)) => {
@@ -115,25 +113,34 @@ fn session(shared: &Shared, fonts: &Fonts) -> anyhow::Result<()> {
             }
         }
 
-        let wait = match spec.mode {
-            LcdMode::Firmware => {
-                debug_assert!(released);
-                Duration::from_millis(500)
+        let wait = match spec.show.as_str() {
+            SHOW_FIRMWARE => Duration::from_millis(500),
+            SHOW_OFF => {
+                lcd.send_jpeg(&encode(&RgbImage::new(WIDTH, HEIGHT))?)?;
+                STATS_INTERVAL
             }
-            LcdMode::Image if !frames.is_empty() => {
+            SHOW_IMAGE if !frames.is_empty() => {
                 let (jpeg, delay) = &frames[frame_idx % frames.len()];
                 lcd.send_jpeg(jpeg)?;
                 frame_idx = frame_idx.wrapping_add(1);
                 // Single images still get re-sent periodically.
                 if frames.len() == 1 { STATS_INTERVAL } else { *delay }
             }
-            mode => {
-                let mode = if mode == LcdMode::Cycle { cycle_mode(&spec, shared.started.elapsed()) } else { mode };
+            show => {
+                let screen = match show {
+                    SHOW_CYCLE => cycle_screen(&spec, shared.started.elapsed()),
+                    // An image with nothing loaded falls through to a placeholder.
+                    SHOW_IMAGE => None,
+                    name => spec.screen(name),
+                };
                 let base = background.get(bg_idx % background.len().max(1));
                 let img = {
                     let theme = shared.theme.read().unwrap();
                     let data = ScreenData::collect(&shared.runtime());
-                    render(mode, &spec, &theme, fonts, &data, base.map(|b| &b.0))
+                    match screen {
+                        Some(screen) => render(screen, &spec, &theme, fonts, &data, base.map(|b| &b.0)),
+                        None => placeholder(&theme, fonts, if show == SHOW_IMAGE { "no image set" } else { "no screens" }),
+                    }
                 };
                 lcd.send_jpeg(&encode(&img)?)?;
                 match base {
@@ -227,43 +234,57 @@ fn load_background(spec: &LcdSpec, theme: &Theme) -> anyhow::Result<Vec<(RgbImag
     Ok(frames)
 }
 
-/// Renders every layout with sample data to `<dir>/<mode>.png` (for development).
+/// Renders every default screen plus a few metric combinations with sample data to
+/// `<dir>/<name>.png` (for development).
 pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir)?;
     let fonts = Fonts::load();
     let theme = Theme::load();
     let spec = LcdSpec::default();
-    let sample = |i: usize| Sensors {
-        cpu: Some(48.0 + 15.0 * (i as f32 / 9.0).sin()),
-        gpu: Some(41.0 + 6.0 * (i as f32 / 23.0).sin()),
-        coolant: Some(33.0 + i as f32 * 0.01),
-        cpu_load: Some(23.0),
-        gpu_load: Some(61.0),
+    let sample = |i: usize| -> BTreeMap<String, f32> {
+        let t = i as f32;
+        [
+            ("cpu.temp", 48.0 + 15.0 * (t / 9.0).sin()),
+            ("cpu.load", 30.0 + 25.0 * (t / 7.0).sin()),
+            ("gpu.temp", 58.0 + 6.0 * (t / 23.0).sin()),
+            ("gpu.load", 90.0 + 5.0 * (t / 5.0).sin()),
+            ("gpu.power", 240.0 + 30.0 * (t / 11.0).sin()),
+            ("gpu.vram", 62.0),
+            ("igpu.temp", 38.0 + 1.0 * (t / 30.0).sin()),
+            ("igpu.load", 2.0),
+            ("mem.used", 41.0 + t * 0.02),
+            ("coolant.temp", 33.0 + t * 0.01),
+            ("pump.rpm", 2302.0),
+            ("pump.duty", 65.0),
+            ("fans.rpm", 735.0),
+            ("fans.duty", 36.0),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
     };
     let data = ScreenData {
-        sensors: sample(HISTORY_LEN - 1),
-        pump_rpm: Some(2302),
-        pump_duty: Some(65),
-        fan_rpm: Some(735),
-        fan_duty: Some(36),
-        fan_count: 6,
+        metrics: sample(HISTORY_LEN - 1),
         history: (0..HISTORY_LEN).map(sample).collect(),
+        fan_count: 6,
     };
-    for mode in LcdMode::ALL.into_iter().filter(|m| m.cyclable()) {
-        let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
-        render(mode, &spec, &theme, &fonts, &data, None).save(dir.join(format!("{name}.png")))?;
-    }
-    for scale in [lumen_ipc::GRAPH_SCALE_MIN, 1.25, lumen_ipc::GRAPH_SCALE_MAX] {
-        let spec = LcdSpec { graph_scale: scale, ..spec.clone() };
-        render(LcdMode::Graph, &spec, &theme, &fonts, &data, None).save(dir.join(format!("graph-{scale}.png")))?;
+    let v = |m: &[&str]| m.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let mut screens = spec.screens.clone();
+    screens.extend([
+        Screen { name: "graph-gpus".into(), style: Style::Graph { metrics: v(&["gpu.temp", "igpu.temp", "cpu.temp"]), scale: 1.0 } },
+        Screen { name: "graph-mixed".into(), style: Style::Graph { metrics: v(&["cpu.load", "gpu.load", "gpu.power", "mem.used"]), scale: 1.2 } },
+        Screen { name: "bars-4".into(), style: Style::Bars { metrics: v(&["gpu.temp", "gpu.load", "gpu.power", "gpu.vram"]) } },
+        Screen { name: "rings-load".into(), style: Style::Rings { outer: "cpu.load".into(), inner: "gpu.load".into(), footer: Some("mem.used".into()) } },
+    ]);
+    for screen in &screens {
+        render(screen, &spec, &theme, &fonts, &data, None).save(dir.join(format!("{}.png", screen.name)))?;
     }
     let wallpaper = LcdSpec { background: Some(lumen_ipc::WALLPAPER.into()), ..spec.clone() };
     match load_background(&wallpaper, &theme) {
         Ok(bg) if !bg.is_empty() => {
-            for mode in [LcdMode::Coolant, LcdMode::Rings, LcdMode::Graph] {
-                let name = serde_json::to_string(&mode)?.trim_matches('"').to_string();
-                render(mode, &wallpaper, &theme, &fonts, &data, Some(&bg[0].0))
-                    .save(dir.join(format!("bg-{name}.png")))?;
+            for name in ["coolant", "rings", "graph"] {
+                let screen = spec.screen(name).expect("default screen");
+                render(screen, &wallpaper, &theme, &fonts, &data, Some(&bg[0].0)).save(dir.join(format!("bg-{name}.png")))?;
             }
         }
         Ok(_) => {}
@@ -272,42 +293,52 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The layout `cycle` mode shows right now.
-fn cycle_mode(spec: &LcdSpec, elapsed: Duration) -> LcdMode {
-    let list: Vec<LcdMode> = spec.cycle.iter().copied().filter(|m| m.cyclable()).collect();
+/// The screen `cycle` shows right now.
+fn cycle_screen(spec: &LcdSpec, elapsed: Duration) -> Option<&Screen> {
+    let list: Vec<&Screen> = spec.cycle.iter().filter_map(|n| spec.screen(n)).collect();
     if list.is_empty() {
-        return LcdMode::Coolant;
+        return spec.screens.first();
     }
     let slot = elapsed.as_secs() / spec.cycle_seconds.max(1) as u64;
-    list[slot as usize % list.len()]
+    Some(list[slot as usize % list.len()])
 }
 
 struct ScreenData {
-    sensors: Sensors,
-    pump_rpm: Option<u16>,
-    pump_duty: Option<u8>,
-    fan_rpm: Option<u16>,
-    fan_duty: Option<u8>,
+    metrics: BTreeMap<String, f32>,
+    history: Vec<BTreeMap<String, f32>>,
     fan_count: usize,
-    history: Vec<Sensors>,
 }
 
 impl ScreenData {
     fn collect(rt: &Runtime) -> Self {
-        let zones: Vec<&ZoneStatus> = rt.devices.iter().flat_map(|d| &d.zones).collect();
-        let pump = zones.iter().find(|z| z.kind == "aio" || z.kind == "pump");
-        let fans: Vec<&&ZoneStatus> = zones.iter().filter(|z| z.kind == "fan" && z.rpm.is_some()).collect();
-        let avg = |v: Vec<u32>| (!v.is_empty()).then(|| v.iter().sum::<u32>() / v.len() as u32);
-        Self {
-            sensors: rt.sensors,
-            pump_rpm: pump.and_then(|z| z.rpm),
-            pump_duty: pump.and_then(|z| z.duty),
-            fan_rpm: avg(fans.iter().filter_map(|z| z.rpm).map(u32::from).collect()).map(|v| v as u16),
-            fan_duty: avg(fans.iter().filter_map(|z| z.duty).map(u32::from).collect()).map(|v| v as u8),
-            fan_count: fans.len(),
-            history: rt.history.iter().copied().collect(),
+        let fan_count = rt
+            .devices
+            .iter()
+            .flat_map(|d| &d.zones)
+            .filter(|z| z.kind == "fan" && z.rpm.is_some())
+            .count();
+        Self { metrics: rt.metrics.clone(), history: rt.history.iter().cloned().collect(), fan_count }
+    }
+
+    fn get(&self, key: &str) -> Option<f32> {
+        self.metrics.get(key).copied()
+    }
+
+    fn fmt(&self, key: &str) -> String {
+        format_metric(key, self.get(key))
+    }
+
+    /// Position of the value within the metric's nominal range, 0..1.
+    fn frac(&self, key: &str) -> f32 {
+        match (metric(key), self.get(key)) {
+            (Some(i), Some(v)) if i.max > i.min => ((v - i.min) / (i.max - i.min)).clamp(0.0, 1.0),
+            _ => 0.0,
         }
     }
+}
+
+fn label(key: &str) -> &'static str {
+    metric(key).map_or("?", |m| m.label)
 }
 
 pub struct Fonts {
@@ -337,141 +368,178 @@ fn rgb(c: Rgb) -> image::Rgb<u8> {
     image::Rgb([c.0, c.1, c.2])
 }
 
-/// Draws `mode` over `base` (a pre-dimmed background frame) or the theme background color.
-fn render(mode: LcdMode, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &ScreenData, base: Option<&RgbImage>) -> RgbImage {
-    let bg = theme.resolve("theme:background");
+fn blank(theme: &Theme) -> RgbImage {
+    let bg = if theme.colors.is_empty() { Rgb::BLACK } else { theme.resolve("theme:background") };
+    RgbImage::from_pixel(WIDTH, HEIGHT, rgb(bg))
+}
+
+fn placeholder(theme: &Theme, fonts: &Fonts, msg: &str) -> RgbImage {
+    let mut img = blank(theme);
+    let muted = theme.colors.get("dark_foreground").copied().unwrap_or(Rgb(128, 128, 128));
+    text(&mut img, fonts.regular.as_ref(), msg, 32.0, WIDTH as f32 / 2.0, 250.0, muted);
+    img
+}
+
+/// Series colors for graphs, bars and rings, in order.
+fn series_colors(spec: &LcdSpec, theme: &Theme) -> [Rgb; MAX_SERIES] {
+    [
+        theme.resolve(&spec.accent),
+        theme.resolve("theme:magenta"),
+        theme.resolve("theme:yellow"),
+        theme.resolve("theme:green"),
+    ]
+}
+
+/// Draws `screen` over `base` (a pre-dimmed background frame) or the theme background color.
+fn render(screen: &Screen, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &ScreenData, base: Option<&RgbImage>) -> RgbImage {
     let fg = theme.resolve("theme:foreground");
     let muted = theme.colors.get("dark_foreground").copied().unwrap_or(fg.scale(0.5));
-    let accent = theme.resolve(&spec.accent);
-    let mut img = match base {
-        Some(b) => b.clone(),
-        None => RgbImage::from_pixel(WIDTH, HEIGHT, rgb(if theme.colors.is_empty() { Rgb::BLACK } else { bg })),
-    };
+    let colors = series_colors(spec, theme);
+    let accent = colors[0];
+    let hot = theme.resolve("theme:red");
+    let mut img = base.cloned().unwrap_or_else(|| blank(theme));
     let cx = WIDTH as f32 / 2.0;
-    let fmt = |t: Option<f32>| t.map_or("--".to_string(), |v| format!("{v:.0}°"));
 
-    match mode {
-        LcdMode::Coolant => {
-            let t = d.sensors.coolant;
-            let frac = t.map_or(0.0, |v| (v - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN));
-            let hot = theme.resolve("theme:red");
+    match &screen.style {
+        Style::Coolant => {
+            let frac = d.frac("coolant.temp");
             gauge(&mut img, 205.0, 22.0, frac, accent, lerp(accent, hot, (frac - 0.5) * 2.0), muted);
             text(&mut img, fonts.regular.as_ref(), "LIQUID", 34.0, cx, 165.0, muted);
-            let big = t.map_or("--".to_string(), |v| format!("{v:.1}°"));
+            let big = d.get("coolant.temp").map_or("--".to_string(), |v| format!("{v:.1}°"));
             text(&mut img, fonts.bold.as_ref(), &big, 120.0, cx, 285.0, fg);
-            if let Some(rpm) = d.pump_rpm {
-                text(&mut img, fonts.regular.as_ref(), &format!("{rpm} RPM"), 32.0, cx, 345.0, muted);
+            if let Some(rpm) = d.get("pump.rpm") {
+                text(&mut img, fonts.regular.as_ref(), &format!("{rpm:.0} RPM"), 32.0, cx, 345.0, muted);
             }
         }
-        LcdMode::System => {
-            let rows = [
-                ("CPU", d.sensors.cpu, 100.0),
-                ("GPU", d.sensors.gpu, 100.0),
-                ("LIQ", d.sensors.coolant, GAUGE_MAX),
-            ];
-            for (i, (label, value, max)) in rows.iter().enumerate() {
-                let y = 160.0 + i as f32 * 95.0;
-                text_left(&mut img, fonts.regular.as_ref(), label, 40.0, 95.0, y, muted);
-                text_right(&mut img, fonts.bold.as_ref(), &fmt(*value), 64.0, 385.0, y, fg);
-                let frac = value.map_or(0.0, |v| v / max);
-                bar(&mut img, 95.0, y + 18.0, 290.0, 8.0, frac, accent, muted.scale(0.5));
-            }
-        }
-        LcdMode::Rings => {
-            let second = theme.resolve("theme:magenta");
-            let hot = theme.resolve("theme:red");
-            let frac = |t: Option<f32>| t.map_or(0.0, |v| (v - RING_MIN) / (RING_MAX - RING_MIN));
-            let (fc, fg_) = (frac(d.sensors.cpu), frac(d.sensors.gpu));
-            gauge(&mut img, 212.0, 18.0, fc, accent, lerp(accent, hot, (fc - 0.5) * 2.0), muted.scale(0.6));
-            gauge(&mut img, 186.0, 18.0, fg_, second, lerp(second, hot, (fg_ - 0.5) * 2.0), muted.scale(0.6));
-            text(&mut img, fonts.regular.as_ref(), "CPU", 26.0, cx, 140.0, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), 84.0, cx, 220.0, accent);
-            text(&mut img, fonts.regular.as_ref(), "GPU", 26.0, cx, 262.0, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), 84.0, cx, 342.0, second);
-            let liq = d.sensors.coolant.map_or("--".to_string(), |v| format!("LIQ {v:.1}°"));
-            text(&mut img, fonts.regular.as_ref(), &liq, 28.0, cx, 400.0, fg);
-        }
-        LcdMode::Load => {
-            let pct = |v: Option<f32>| v.map_or("--".to_string(), |v| format!("{v:.0}%"));
-            let rows = [
-                ("CPU", d.sensors.cpu_load, d.sensors.cpu, accent),
-                ("GPU", d.sensors.gpu_load, d.sensors.gpu, theme.resolve("theme:magenta")),
-            ];
-            for (i, (label, load, temp, color)) in rows.into_iter().enumerate() {
-                let y = 190.0 + i as f32 * 120.0;
-                text_left(&mut img, fonts.regular.as_ref(), label, 36.0, 90.0, y, muted);
-                text_right(&mut img, fonts.bold.as_ref(), &pct(load), 76.0, 390.0, y, fg);
-                bar(&mut img, 90.0, y + 20.0, 300.0, 12.0, load.unwrap_or(0.0) / 100.0, color, muted.scale(0.5));
-                text_left(&mut img, fonts.regular.as_ref(), &fmt(temp), 24.0, 90.0, y + 58.0, muted);
-            }
-            let liq = d.sensors.coolant.map_or("--".to_string(), |v| format!("LIQ {v:.1}°"));
-            text(&mut img, fonts.regular.as_ref(), &liq, 28.0, cx, 418.0, accent);
-        }
-        LcdMode::Cooling => {
-            let duty = d.pump_duty.map_or(0.0, |p| p as f32 / 100.0);
-            gauge(&mut img, 205.0, 22.0, duty, accent, accent, muted.scale(0.6));
+        Style::Cooling => {
+            gauge(&mut img, 205.0, 22.0, d.frac("pump.duty"), accent, accent, muted.scale(0.6));
             text(&mut img, fonts.regular.as_ref(), "PUMP", 32.0, cx, 155.0, muted);
-            let rpm = d.pump_rpm.map_or("--".to_string(), |r| r.to_string());
-            text(&mut img, fonts.bold.as_ref(), &rpm, 110.0, cx, 265.0, fg);
-            let duty_txt = d.pump_duty.map_or("RPM".to_string(), |p| format!("RPM · {p}%"));
-            text(&mut img, fonts.regular.as_ref(), &duty_txt, 28.0, cx, 305.0, muted);
-            if let Some(rpm) = d.fan_rpm {
-                let fans = format!("{}× FANS {rpm} · {}%", d.fan_count, d.fan_duty.unwrap_or(0));
+            text(&mut img, fonts.bold.as_ref(), &d.fmt("pump.rpm"), 110.0, cx, 265.0, fg);
+            let duty = d.get("pump.duty").map_or("RPM".to_string(), |p| format!("RPM · {p:.0}%"));
+            text(&mut img, fonts.regular.as_ref(), &duty, 28.0, cx, 305.0, muted);
+            if let Some(rpm) = d.get("fans.rpm") {
+                let fans = format!("{}× FANS {rpm:.0} · {}", d.fan_count, d.fmt("fans.duty"));
                 text(&mut img, fonts.regular.as_ref(), &fans, 28.0, cx, 370.0, accent);
             }
         }
-        LcdMode::Graph => {
-            // Same colors as Rings: CPU in the accent, GPU in magenta.
-            let gpu_color = theme.resolve("theme:magenta");
-            let g = graph_layout(spec.graph_scale);
-            text(&mut img, fonts.regular.as_ref(), "CPU", g.label_px, cx - 85.0, g.label_y, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.cpu), g.value_px, cx - 85.0, g.value_y, accent);
-            text(&mut img, fonts.regular.as_ref(), "GPU", g.label_px, cx + 85.0, g.label_y, muted);
-            text(&mut img, fonts.bold.as_ref(), &fmt(d.sensors.gpu), g.value_px, cx + 85.0, g.value_y, gpu_color);
-            let (x0, x1, y0, y1) = (g.x0, g.x1, g.y0, g.y1);
-            let series = |f: fn(&Sensors) -> Option<f32>| -> Vec<(usize, f32)> {
-                d.history.iter().enumerate().filter_map(|(i, s)| f(s).map(|v| (i, v))).collect()
-            };
-            let cpu = series(|s| s.cpu);
-            let gpu = series(|s| s.gpu);
-            let values = cpu.iter().chain(&gpu).map(|p| p.1);
-            let (lo, hi) = values.fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
-            let (lo, hi) = if lo > hi { (20.0, 60.0) } else { (lo.floor() - 2.0, hi.ceil() + 2.0) };
-            let (lo, hi) = if hi - lo < 10.0 { (lo, lo + 10.0) } else { (lo, hi) };
-            let n = d.history.len();
-            let to_xy = |&(i, v): &(usize, f32)| {
-                // Newest sample at the right edge; the plot fills in from the right over HISTORY_LEN s.
-                let age = (n - 1 - i) as f32;
-                (x1 - age / (HISTORY_LEN - 1) as f32 * (x1 - x0), y1 - (v - lo) / (hi - lo) * (y1 - y0))
-            };
-            for gy in [y0, (y0 + y1) / 2.0, y1] {
-                bar(&mut img, x0, gy, x1 - x0, 1.0, 0.0, muted, muted.scale(0.4));
-            }
-            let cpu_pts: Vec<(f32, f32)> = cpu.iter().map(to_xy).collect();
-            fill_under(&mut img, &cpu_pts, y1, accent, 0.15);
-            polyline(&mut img, &gpu.iter().map(to_xy).collect::<Vec<_>>(), gpu_color, 3.0);
-            polyline(&mut img, &cpu_pts, accent, 3.0);
-            // Axis labels sit inside the plot so a larger plot doesn't push them off the round panel.
-            let (px, pad) = (g.axis_px, g.axis_px * 0.25);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{hi:.0}°"), px, x0 + pad, y0 + px, muted);
-            text_left(&mut img, fonts.regular.as_ref(), &format!("{lo:.0}°"), px, x0 + pad, y1 - pad, muted);
-            text_right(&mut img, fonts.regular.as_ref(), "3 min", px, x1 - pad, y1 - pad, muted);
-        }
-        LcdMode::Clock => {
+        Style::Clock => {
             let now = chrono::Local::now();
             gauge(&mut img, 205.0, 10.0, (now.timestamp() % 60) as f32 / 60.0, accent, accent, muted.scale(0.4));
             text(&mut img, fonts.bold.as_ref(), &now.format("%H:%M").to_string(), 130.0, cx, 280.0, fg);
             text(&mut img, fonts.regular.as_ref(), &now.format("%a %d %b").to_string(), 36.0, cx, 340.0, muted);
-            text(&mut img, fonts.regular.as_ref(), &fmt(d.sensors.coolant), 36.0, cx, 160.0, accent);
+            text(&mut img, fonts.regular.as_ref(), &d.fmt("coolant.temp"), 36.0, cx, 160.0, accent);
         }
-        LcdMode::Image => {
-            text(&mut img, fonts.regular.as_ref(), "no image set", 32.0, cx, 250.0, muted);
+        Style::Rings { outer, inner, footer } => {
+            let (fo, fi) = (d.frac(outer), d.frac(inner));
+            let second = colors[1];
+            gauge(&mut img, 212.0, 18.0, fo, accent, lerp(accent, hot, (fo - 0.5) * 2.0), muted.scale(0.6));
+            gauge(&mut img, 186.0, 18.0, fi, second, lerp(second, hot, (fi - 0.5) * 2.0), muted.scale(0.6));
+            text(&mut img, fonts.regular.as_ref(), label(outer), 26.0, cx, 140.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &d.fmt(outer), 84.0, cx, 220.0, accent);
+            text(&mut img, fonts.regular.as_ref(), label(inner), 26.0, cx, 262.0, muted);
+            text(&mut img, fonts.bold.as_ref(), &d.fmt(inner), 84.0, cx, 342.0, second);
+            if let Some(f) = footer {
+                let line = format!("{} {}", label(f), d.fmt(f));
+                text(&mut img, fonts.regular.as_ref(), &line, 28.0, cx, 400.0, fg);
+            }
         }
-        LcdMode::Off => img = RgbImage::new(WIDTH, HEIGHT),
-        // Resolved by the caller / not rendered.
-        LcdMode::Cycle | LcdMode::Firmware => {}
+        Style::Bars { metrics } => {
+            let n = metrics.len().clamp(1, MAX_SERIES);
+            let (row, value_px, label_px) = if n <= 3 { (95.0, 64.0, 40.0) } else { (78.0, 52.0, 34.0) };
+            let first = 255.0 - (n as f32 - 1.0) * row / 2.0;
+            for (i, key) in metrics.iter().take(n).enumerate() {
+                let y = first + i as f32 * row;
+                text_left(&mut img, fonts.regular.as_ref(), label(key), label_px, 95.0, y, muted);
+                text_right(&mut img, fonts.bold.as_ref(), &d.fmt(key), value_px, 385.0, y, fg);
+                bar(&mut img, 95.0, y + 18.0, 290.0, 8.0, d.frac(key), colors[i], muted.scale(0.5));
+            }
+        }
+        Style::Graph { metrics, scale } => draw_graph(&mut img, metrics, *scale, &colors, fonts, d, muted),
     }
     img
+}
+
+/// History plot. Series sharing one unit share an auto-fitted axis; mixed units are each
+/// scaled to their metric's nominal range and the axis labels are omitted.
+fn draw_graph(img: &mut RgbImage, metrics: &[String], scale: f32, colors: &[Rgb; MAX_SERIES], fonts: &Fonts, d: &ScreenData, muted: Rgb) {
+    let metrics = &metrics[..metrics.len().min(MAX_SERIES)];
+    let n = metrics.len().max(1);
+    let g = graph_layout(scale);
+    let cx = WIDTH as f32 / 2.0;
+
+    // Header: one current value per series, in its color.
+    let (xs, shrink): (&[f32], f32) = match n {
+        1 => (&[0.0], 1.0),
+        2 => (&[-85.0, 85.0], 1.0),
+        3 => (&[-125.0, 0.0, 125.0], 0.82),
+        _ => (&[-153.0, -51.0, 51.0, 153.0], 0.66),
+    };
+    for (i, key) in metrics.iter().enumerate() {
+        let x = cx + xs[i];
+        text(img, fonts.regular.as_ref(), label(key), g.label_px * shrink.max(0.8), x, g.label_y, muted);
+        text(img, fonts.bold.as_ref(), &d.fmt(key), g.value_px * shrink, x, g.value_y, colors[i]);
+    }
+
+    let (x0, x1, y0, y1) = (g.x0, g.x1, g.y0, g.y1);
+    let series: Vec<Vec<(usize, f32)>> = metrics
+        .iter()
+        .map(|k| d.history.iter().enumerate().filter_map(|(i, s)| s.get(k).map(|v| (i, *v))).collect())
+        .collect();
+    let units: Vec<_> = metrics.iter().filter_map(|k| metric(k).map(|m| m.unit)).collect();
+    let shared_unit = units.first().copied().filter(|u| units.iter().all(|x| x == u));
+
+    // Per-series value range: shared auto-fit, or each metric's nominal range.
+    let ranges: Vec<(f32, f32)> = match shared_unit {
+        Some(unit) => {
+            let (lo, hi) = series.iter().flatten().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+            let (min_span, pad) = match unit {
+                Unit::Celsius | Unit::Percent => (10.0, 2.0),
+                Unit::Rpm => (200.0, 50.0),
+                Unit::Watts => (20.0, 5.0),
+            };
+            let (mut lo, mut hi) = if lo > hi { (0.0, min_span) } else { (lo.floor() - pad, hi.ceil() + pad) };
+            if unit != Unit::Celsius {
+                lo = lo.max(0.0);
+            }
+            if unit == Unit::Percent {
+                hi = hi.min(100.0);
+            }
+            if hi - lo < min_span {
+                hi = lo + min_span;
+            }
+            vec![(lo, hi); metrics.len()]
+        }
+        None => metrics.iter().map(|k| metric(k).map_or((0.0, 100.0), |m| (m.min, m.max))).collect(),
+    };
+
+    let len = d.history.len();
+    let to_xy = |(i, v): (usize, f32), (lo, hi): (f32, f32)| {
+        // Newest sample at the right edge; the plot fills in from the right over HISTORY_LEN s.
+        let age = (len - 1 - i) as f32;
+        let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        (x1 - age / (HISTORY_LEN - 1) as f32 * (x1 - x0), y1 - f * (y1 - y0))
+    };
+    for gy in [y0, (y0 + y1) / 2.0, y1] {
+        bar(img, x0, gy, x1 - x0, 1.0, 0.0, muted, muted.scale(0.4));
+    }
+    let pts: Vec<Vec<(f32, f32)>> =
+        series.iter().zip(&ranges).map(|(s, r)| s.iter().map(|p| to_xy(*p, *r)).collect()).collect();
+    if let Some(first) = pts.first() {
+        fill_under(img, first, y1, colors[0], 0.15);
+    }
+    // Draw the first series last so it sits on top.
+    for (i, p) in pts.iter().enumerate().rev() {
+        polyline(img, p, colors[i], 3.0);
+    }
+
+    // Axis labels sit inside the plot so a larger plot doesn't push them off the round panel.
+    let (px, pad) = (g.axis_px, g.axis_px * 0.25);
+    if let Some(unit) = shared_unit {
+        let (lo, hi) = ranges[0];
+        text_left(img, fonts.regular.as_ref(), &unit.format(hi), px, x0 + pad, y0 + px, muted);
+        text_left(img, fonts.regular.as_ref(), &unit.format(lo), px, x0 + pad, y1 - pad, muted);
+    }
+    text_right(img, fonts.regular.as_ref(), "3 min", px, x1 - pad, y1 - pad, muted);
 }
 
 fn blend(img: &mut RgbImage, x: i32, y: i32, c: Rgb, a: f32) {
@@ -682,16 +750,18 @@ mod tests {
     }
 
     #[test]
-    fn cycle_skips_unrenderable_and_wraps() {
+    fn cycle_follows_names_and_skips_missing() {
         let spec = LcdSpec {
-            cycle: vec![LcdMode::Rings, LcdMode::Image, LcdMode::Graph],
+            cycle: vec!["rings".into(), "nope".into(), "graph".into()],
             cycle_seconds: 10,
             ..LcdSpec::default()
         };
-        assert_eq!(cycle_mode(&spec, Duration::from_secs(5)), LcdMode::Rings);
-        assert_eq!(cycle_mode(&spec, Duration::from_secs(15)), LcdMode::Graph);
-        assert_eq!(cycle_mode(&spec, Duration::from_secs(25)), LcdMode::Rings);
-        let empty = LcdSpec { cycle: vec![LcdMode::Off], ..LcdSpec::default() };
-        assert_eq!(cycle_mode(&empty, Duration::ZERO), LcdMode::Coolant);
+        let at = |s| cycle_screen(&spec, Duration::from_secs(s)).unwrap().name.clone();
+        assert_eq!(at(5), "rings");
+        assert_eq!(at(15), "graph");
+        assert_eq!(at(25), "rings");
+        let empty = LcdSpec { cycle: vec![], ..LcdSpec::default() };
+        assert_eq!(cycle_screen(&empty, Duration::ZERO).unwrap().name, "coolant");
     }
+
 }
