@@ -28,15 +28,22 @@ Panel {
   readonly property var coolant: st ? st.sensors.coolant : null
   readonly property bool critical: !!(st && st.critical)
 
-  // Configured screens, then cycle and the firmware screen.
-  readonly property var layouts: {
+  // Button models are only replaced when their contents change: each status poll
+  // yields fresh arrays, and handing those to a Repeater would recreate every button
+  // (resetting its highlight) every poll.
+  property var layouts: []
+  property var profileList: []
+
+  function syncModels() {
     var out = []
     var screens = st && st.active.lcd.screens ? st.active.lcd.screens : []
     for (var i = 0; i < screens.length; i++)
       out.push({ mode: screens[i].name, label: screens[i].name.charAt(0).toUpperCase() + screens[i].name.slice(1) })
     out.push({ mode: "cycle", label: "Cycle" })
     out.push({ mode: "firmware", label: "Corsair" })
-    return out
+    if (JSON.stringify(out) !== JSON.stringify(layouts)) layouts = out
+    var profiles = st ? st.profiles : []
+    if (JSON.stringify(profiles) !== JSON.stringify(profileList)) profileList = profiles
   }
 
   // Presets apply to the `*` target; per-device overrides in the TUI still win.
@@ -98,6 +105,7 @@ Panel {
     try {
       st = JSON.parse(text)
       online = true
+      syncModels()
     } catch (e) {
       online = false
     }
@@ -291,8 +299,8 @@ Panel {
         ButtonSection {
           visible: root.online
           title: "PROFILE"
-          columns: Math.max(1, Math.min(4, root.st ? root.st.profiles.length : 1))
-          model: root.st ? root.st.profiles : []
+          columns: Math.max(1, Math.min(4, root.profileList.length))
+          model: root.profileList
           labelOf: function(p) { return String(p).charAt(0).toUpperCase() + String(p).slice(1) }
           isActive: function(p) { return root.st && root.st.profile === p }
           onPicked: function(p) { root.run(["profile", p]) }
