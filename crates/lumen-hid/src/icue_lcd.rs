@@ -67,6 +67,11 @@ impl Lcd {
         self.dev.send_feature(&[0x03, 0x0c, rotation as u8, 0x01])
     }
 
+    /// Sends a raw 4-byte feature report (report ID 0x03 first); for recovery tools.
+    pub fn send_feature_raw(&self, report: &[u8; 4]) -> Result<()> {
+        self.dev.send_feature(report)
+    }
+
     /// Hands the panel back to its built-in firmware screen.
     pub fn release(&self) -> Result<()> {
         self.dev.send_feature(&[0x03, 0x1e, 0x01, 0x01])?;
