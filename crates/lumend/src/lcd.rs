@@ -234,6 +234,29 @@ fn load_background(spec: &LcdSpec, theme: &Theme) -> anyhow::Result<Vec<(RgbImag
     Ok(frames)
 }
 
+/// Deterministic sensor-like noise in roughly [-1, 1] for preview data: slow drift
+/// plus faster wobble plus per-sample jitter, so graphs look like real readings
+/// and every preview run renders the same image.
+fn preview_noise(seed: u32, t: f32) -> f32 {
+    fn hash(seed: u32, k: i64) -> f32 {
+        let mut x = (k as u64 as u32) ^ seed.wrapping_mul(0x9E37_79B9);
+        x ^= x >> 16;
+        x = x.wrapping_mul(0x7FEB_352D);
+        x ^= x >> 15;
+        x = x.wrapping_mul(0x846C_A68B);
+        x ^= x >> 16;
+        x as f32 / u32::MAX as f32 * 2.0 - 1.0
+    }
+    fn value(seed: u32, t: f32) -> f32 {
+        let k = t.floor();
+        let f = t - k;
+        let s = f * f * (3.0 - 2.0 * f);
+        let k = k as i64;
+        hash(seed, k) * (1.0 - s) + hash(seed, k + 1) * s
+    }
+    0.6 * value(seed, t / 14.0) + 0.3 * value(seed.wrapping_add(101), t / 4.0) + 0.1 * hash(seed.wrapping_add(202), t as i64)
+}
+
 /// Renders every default screen plus a few metric combinations with sample data to
 /// `<dir>/<name>.png` (for development).
 pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
@@ -244,13 +267,13 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
     let sample = |i: usize| -> BTreeMap<String, f32> {
         let t = i as f32;
         [
-            ("cpu.temp", 48.0 + 15.0 * (t / 9.0).sin()),
-            ("cpu.load", 30.0 + 25.0 * (t / 7.0).sin()),
-            ("gpu.temp", 58.0 + 6.0 * (t / 23.0).sin()),
-            ("gpu.load", 90.0 + 5.0 * (t / 5.0).sin()),
-            ("gpu.power", 240.0 + 30.0 * (t / 11.0).sin()),
+            ("cpu.temp", 48.0 + 12.0 * preview_noise(1, t)),
+            ("cpu.load", (30.0 + 24.0 * preview_noise(2, t)).clamp(0.0, 100.0)),
+            ("gpu.temp", 58.0 + 6.0 * preview_noise(3, t)),
+            ("gpu.load", (86.0 + 12.0 * preview_noise(4, t)).clamp(0.0, 100.0)),
+            ("gpu.power", 240.0 + 35.0 * preview_noise(5, t)),
             ("gpu.vram", 62.0),
-            ("igpu.temp", 38.0 + 1.0 * (t / 30.0).sin()),
+            ("igpu.temp", 38.0 + 1.5 * preview_noise(6, t)),
             ("igpu.load", 2.0),
             ("mem.used", 41.0 + t * 0.02),
             ("coolant.temp", 33.0 + t * 0.01),

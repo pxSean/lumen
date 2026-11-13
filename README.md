@@ -2,6 +2,13 @@
 
 Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB here.
 
+<p align="center">
+  <img src="docs/photos/jade-horse.jpg" width="32%" alt="Jade Horse theme: pale green fans, AIO screen on the theme wallpaper, Lumen panel on the monitor">
+  <img src="docs/photos/matte-black.jpg" width="32%" alt="Matte Black theme: warm white fans and AIO screen">
+  <img src="docs/photos/tokyo-night.jpg" width="32%" alt="Tokyo Night theme: blue fans and AIO screen">
+</p>
+<p align="center"><sub>The fans, pump head and AIO screen follow the Omarchy theme: Jade Horse, Matte Black and Tokyo Night.</sub></p>
+
 | Device | What lumen does |
 |---|---|
 | Corsair iCUE LINK System Hub | Per-LED lighting on all fans and the pump head; fan and pump curves; sensor readout |
@@ -32,6 +39,8 @@ The most specific target wins:
 
 The most specific target wins: `ch<N>`, then `pump` or `fans`.
 
+<p align="center"><img src="docs/panel.png" width="360" alt="The Lumen bar widget's panel: temperatures, fan speeds, and buttons for profiles, AIO screens and lighting"></p>
+
 ## Safety
 
 - The pump never runs below 50%. The hub driver enforces this.
@@ -40,6 +49,18 @@ The most specific target wins: `ch<N>`, then `pump` or `fans`.
 - When the daemon stops (stop, crash or unwind), the hub goes back to its onboard fan curve, and the LCD, keyboard and mouse go back to their firmware lighting.
 
 ## LCD screens
+
+<p align="center">
+  <img src="docs/screens/coolant.png" width="23%" alt="coolant gauge">
+  <img src="docs/screens/rings.png" width="23%" alt="CPU and GPU rings">
+  <img src="docs/screens/graph.png" width="23%" alt="CPU and GPU temperature graph">
+  <img src="docs/screens/cooling.png" width="23%" alt="pump and fans">
+  <img src="docs/screens/bars-4.png" width="23%" alt="four GPU bars">
+  <img src="docs/screens/system.png" width="23%" alt="system bars">
+  <img src="docs/screens/clock.png" width="23%" alt="clock">
+  <img src="docs/screens/bg-rings.png" width="23%" alt="rings over the Omarchy wallpaper">
+</p>
+<p align="center"><sub>Rendered with <code>lumend --preview</code> using sample data.</sub></p>
 
 A *screen* is a style plus its options:
 
@@ -83,7 +104,7 @@ Animated GIF backgrounds redraw the layout on every frame, at up to 20fps; this 
 
 ## LCD previews
 
-`lumend --preview DIR` renders every layout to PNG using the current theme and sample data, without touching the device.
+`lumend --preview DIR` renders every layout to PNG using the current theme and sample data, without touching the device. The sample data is fixed-seed noise, so the graphs look like real readings and every run gives the same images.
 
 ## Install
 
