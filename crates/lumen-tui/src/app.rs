@@ -700,6 +700,7 @@ impl App {
                 *style = Style::with_name(next, style).expect("known style");
             }
             (EditRow::Size, Style::Graph { scale, .. }) if left || right => *scale = step_scale(*scale, right),
+            (EditRow::Lanes, Style::Graph { lanes, .. }) => *lanes = !*lanes,
             (EditRow::Metric(key), Style::Graph { metrics, .. } | Style::Bars { metrics }) if toggle => {
                 if let Some(i) = metrics.iter().position(|m| m == key) {
                     if metrics.len() == 1 {
@@ -770,6 +771,7 @@ pub enum LcdEntry {
 pub enum EditRow {
     Style,
     Size,
+    Lanes,
     Outer,
     Inner,
     Footer,
@@ -781,7 +783,7 @@ pub fn edit_rows(style: &Style) -> Vec<EditRow> {
     let mut rows = vec![EditRow::Style];
     match style {
         Style::Graph { .. } => {
-            rows.push(EditRow::Size);
+            rows.extend([EditRow::Size, EditRow::Lanes]);
             rows.extend(METRICS.iter().map(|m| EditRow::Metric(m.key)));
         }
         Style::Bars { .. } => rows.extend(METRICS.iter().map(|m| EditRow::Metric(m.key))),

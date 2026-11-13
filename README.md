@@ -66,7 +66,7 @@ A *screen* is a style plus its options:
 
 | Style | Options |
 |---|---|
-| `graph` | 1–4 metrics and a plot size. Metrics that share a unit share an auto-fitted axis; with mixed units, each line is scaled to that metric's own range |
+| `graph` | 1–4 metrics, a plot size, and lanes on or off. Metrics that share a unit share an auto-fitted axis. With mixed units and lanes off, the lines overlap and each is scaled to its metric's own range, without axis labels. With lanes on, each unit (°C, %, W, rpm) gets its own horizontal lane with its own labelled axis |
 | `bars` | 1–4 metrics, one row each |
 | `rings` | An outer and an inner gauge metric, plus an optional footer metric |
 | `coolant`, `cooling`, `clock` | None |
@@ -85,13 +85,14 @@ The metrics are:
 lumenctl screen                                   # list screens (● showing, ↻ in cycle)
 lumenctl screen gpus --style graph --metrics gpu.temp,igpu.temp,cpu.temp --scale 1.2
 lumenctl screen rings --outer cpu.load --inner gpu.load --footer mem.used
+lumenctl screen graph --metrics cpu.temp,gpu.temp,mem.used --lanes on
 lumenctl screen gpus --rename temps    |    lumenctl screen temps --delete
 lumenctl lcd gpus                                 # show it; or: lumenctl lcd cycle --cycle coolant,gpus,load
 ```
 
 In the TUI's Screen tab:
 
-- `e` edits the selected screen: ←→ changes the style, size or gauge metric, and space toggles a metric on or off.
+- `e` edits the selected screen: ←→ changes the style, size or gauge metric, and space toggles a metric or lanes on or off.
 - `n` creates a new screen, `R` renames the selected one, and `x` deletes it.
 
 Configs written before screens existed (with `mode =` and `graph_scale =`) migrate automatically.

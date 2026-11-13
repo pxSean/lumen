@@ -246,7 +246,15 @@ pub enum Style {
         /// Plot size, [`GRAPH_SCALE_MIN`]..=[`GRAPH_SCALE_MAX`].
         #[serde(default = "one")]
         scale: f32,
+        /// Give each unit (°C, %, W, rpm) its own horizontal lane with its own axis,
+        /// instead of overlaying every series in one plot.
+        #[serde(default, skip_serializing_if = "is_false")]
+        lanes: bool,
     },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl Style {
@@ -287,7 +295,10 @@ impl Style {
                 Style::Rings { outer: v[0].clone(), inner: v[1].clone(), footer: Some("coolant.temp".into()) }
             }
             "bars" => Style::Bars { metrics: pick(MAX_SERIES, &["cpu.temp", "gpu.temp", "coolant.temp"]) },
-            "graph" => Style::Graph { metrics: pick(MAX_SERIES, &["cpu.temp", "gpu.temp"]), scale: 1.0 },
+            "graph" => {
+                let lanes = matches!(from, Style::Graph { lanes: true, .. });
+                Style::Graph { metrics: pick(MAX_SERIES, &["cpu.temp", "gpu.temp"]), scale: 1.0, lanes }
+            }
             _ => return None,
         })
     }
@@ -318,7 +329,7 @@ fn default_screens() -> Vec<Screen> {
         ),
         screen("load", Style::Bars { metrics: v(&["cpu.load", "gpu.load", "mem.used"]) }),
         screen("cooling", Style::Cooling),
-        screen("graph", Style::Graph { metrics: v(&["cpu.temp", "gpu.temp"]), scale: 1.0 }),
+        screen("graph", Style::Graph { metrics: v(&["cpu.temp", "gpu.temp"]), scale: 1.0, lanes: false }),
         screen("clock", Style::Clock),
     ]
 }
@@ -480,7 +491,7 @@ mod tests {
         lcd.screens.push(Screen { name: "cycle".into(), style: Style::Clock });
         assert!(lcd.validate().is_err());
         let mut lcd = LcdSpec::default();
-        lcd.screens.push(Screen { name: "x".into(), style: Style::Graph { metrics: vec!["nope".into()], scale: 1.0 } });
+        lcd.screens.push(Screen { name: "x".into(), style: Style::Graph { metrics: vec!["nope".into()], scale: 1.0, lanes: false } });
         assert!(lcd.validate().unwrap_err().contains("unknown metric"));
     }
 

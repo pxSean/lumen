@@ -351,7 +351,9 @@ fn draw_fans(f: &mut Frame, app: &App, p: &Palette, area: Rect) {
 fn describe_style(style: &ScreenStyle) -> String {
     let labels = |m: &[String]| m.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", ");
     match style {
-        ScreenStyle::Graph { metrics, scale } => format!("graph · {} · {scale:.1}×", labels(metrics)),
+        ScreenStyle::Graph { metrics, scale, lanes } => {
+            format!("graph · {} · {scale:.1}×{}", labels(metrics), if *lanes { " · lanes" } else { "" })
+        }
         ScreenStyle::Bars { metrics } => format!("bars · {}", labels(metrics)),
         ScreenStyle::Rings { outer, inner, .. } => format!("rings · {outer} / {inner}"),
         other => other.name().to_string(),
@@ -475,6 +477,11 @@ fn draw_screen_editor(f: &mut Frame, app: &App, p: &Palette, area: Rect, st: &St
                 (EditRow::Size, ScreenStyle::Graph { scale, .. }) => vec![
                     Span::styled("Size    ", Style::default().fg(p.muted)),
                     Span::raw(format!("◂ {scale:.1}× ▸")),
+                ],
+                (EditRow::Lanes, ScreenStyle::Graph { lanes, .. }) => vec![
+                    Span::styled("Lanes   ", Style::default().fg(p.muted)),
+                    Span::raw(format!("◂ {} ▸", if *lanes { "on" } else { "off" })),
+                    Span::styled("  one lane per unit, each with its own axis", Style::default().fg(p.muted)),
                 ],
                 (EditRow::Outer | EditRow::Inner | EditRow::Footer, ScreenStyle::Rings { outer, inner, footer }) => {
                     let (label, value) = match row {

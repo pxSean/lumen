@@ -275,7 +275,7 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
             ("gpu.vram", 62.0),
             ("igpu.temp", 38.0 + 1.5 * preview_noise(6, t)),
             ("igpu.load", 2.0),
-            ("mem.used", 41.0 + t * 0.02),
+            ("mem.used", 41.0 + t * 0.02 + 1.5 * preview_noise(7, t)),
             ("coolant.temp", 33.0 + t * 0.01),
             ("pump.rpm", 2302.0),
             ("pump.duty", 65.0),
@@ -294,8 +294,10 @@ pub fn preview(dir: &std::path::Path) -> anyhow::Result<()> {
     let v = |m: &[&str]| m.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let mut screens = spec.screens.clone();
     screens.extend([
-        Screen { name: "graph-gpus".into(), style: Style::Graph { metrics: v(&["gpu.temp", "igpu.temp", "cpu.temp"]), scale: 1.0 } },
-        Screen { name: "graph-mixed".into(), style: Style::Graph { metrics: v(&["cpu.load", "gpu.load", "gpu.power", "mem.used"]), scale: 1.2 } },
+        Screen { name: "graph-gpus".into(), style: Style::Graph { metrics: v(&["gpu.temp", "igpu.temp", "cpu.temp"]), scale: 1.0, lanes: false } },
+        Screen { name: "graph-mixed".into(), style: Style::Graph { metrics: v(&["cpu.load", "gpu.load", "gpu.power", "mem.used"]), scale: 1.2, lanes: false } },
+        Screen { name: "graph-lanes".into(), style: Style::Graph { metrics: v(&["cpu.temp", "gpu.temp", "mem.used"]), scale: 1.0, lanes: true } },
+        Screen { name: "graph-lanes-3".into(), style: Style::Graph { metrics: v(&["cpu.temp", "gpu.load", "gpu.power", "mem.used"]), scale: 1.2, lanes: true } },
         Screen { name: "bars-4".into(), style: Style::Bars { metrics: v(&["gpu.temp", "gpu.load", "gpu.power", "gpu.vram"]) } },
         Screen { name: "rings-load".into(), style: Style::Rings { outer: "cpu.load".into(), inner: "gpu.load".into(), footer: Some("mem.used".into()) } },
     ]);
@@ -477,14 +479,16 @@ fn render(screen: &Screen, spec: &LcdSpec, theme: &Theme, fonts: &Fonts, d: &Scr
                 bar(&mut img, 95.0, y + 18.0, 290.0, 8.0, d.frac(key), colors[i], muted.scale(0.5));
             }
         }
-        Style::Graph { metrics, scale } => draw_graph(&mut img, metrics, *scale, &colors, fonts, d, muted),
+        Style::Graph { metrics, scale, lanes } => draw_graph(&mut img, metrics, *scale, *lanes, &colors, fonts, d, muted),
     }
     img
 }
 
 /// History plot. Series sharing one unit share an auto-fitted axis; mixed units are each
-/// scaled to their metric's nominal range and the axis labels are omitted.
-fn draw_graph(img: &mut RgbImage, metrics: &[String], scale: f32, colors: &[Rgb; MAX_SERIES], fonts: &Fonts, d: &ScreenData, muted: Rgb) {
+/// scaled to their metric's nominal range and the axis labels are omitted. With `lanes`,
+/// each unit instead gets its own horizontal lane with its own auto-fitted, labelled axis.
+#[allow(clippy::too_many_arguments)]
+fn draw_graph(img: &mut RgbImage, metrics: &[String], scale: f32, lanes: bool, colors: &[Rgb; MAX_SERIES], fonts: &Fonts, d: &ScreenData, muted: Rgb) {
     let metrics = &metrics[..metrics.len().min(MAX_SERIES)];
     let n = metrics.len().max(1);
     let g = graph_layout(scale);
@@ -508,61 +512,124 @@ fn draw_graph(img: &mut RgbImage, metrics: &[String], scale: f32, colors: &[Rgb;
         .iter()
         .map(|k| d.history.iter().enumerate().filter_map(|(i, s)| s.get(k).map(|v| (i, *v))).collect())
         .collect();
-    let units: Vec<_> = metrics.iter().filter_map(|k| metric(k).map(|m| m.unit)).collect();
-    let shared_unit = units.first().copied().filter(|u| units.iter().all(|x| x == u));
+    let units: Vec<Option<Unit>> = metrics.iter().map(|k| metric(k).map(|m| m.unit)).collect();
 
-    // Per-series value range: shared auto-fit, or each metric's nominal range.
-    let ranges: Vec<(f32, f32)> = match shared_unit {
-        Some(unit) => {
-            let (lo, hi) = series.iter().flatten().fold((f32::MAX, f32::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
-            let (min_span, pad) = match unit {
-                Unit::Celsius | Unit::Percent => (10.0, 2.0),
-                Unit::Rpm => (200.0, 50.0),
-                Unit::Watts => (20.0, 5.0),
-            };
-            let (mut lo, mut hi) = if lo > hi { (0.0, min_span) } else { (lo.floor() - pad, hi.ceil() + pad) };
-            if unit != Unit::Celsius {
-                lo = lo.max(0.0);
+    // Which series go in which lane, and the unit each lane's axis is labelled in.
+    let mut groups: Vec<(Option<Unit>, Vec<usize>)> = Vec::new();
+    if lanes {
+        for (i, u) in units.iter().enumerate() {
+            match groups.iter_mut().find(|(gu, _)| u.is_some() && gu == u) {
+                Some((_, members)) => members.push(i),
+                None => groups.push((*u, vec![i])),
             }
-            if unit == Unit::Percent {
-                hi = hi.min(100.0);
-            }
-            if hi - lo < min_span {
-                hi = lo + min_span;
-            }
-            vec![(lo, hi); metrics.len()]
         }
-        None => metrics.iter().map(|k| metric(k).map_or((0.0, 100.0), |m| (m.min, m.max))).collect(),
-    };
+    } else {
+        let shared = units.first().copied().flatten().filter(|u| units.iter().all(|x| *x == Some(*u)));
+        groups.push((shared, (0..metrics.len()).collect()));
+    }
 
+    let k = groups.len().max(1) as f32;
+    let gap = if groups.len() > 1 { 12.0 } else { 0.0 };
+    let lane_h = ((y1 - y0) - gap * (k - 1.0)) / k;
     let len = d.history.len();
-    let to_xy = |(i, v): (usize, f32), (lo, hi): (f32, f32)| {
-        // Newest sample at the right edge; the plot fills in from the right over HISTORY_LEN s.
-        let age = (len - 1 - i) as f32;
-        let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
-        (x1 - age / (HISTORY_LEN - 1) as f32 * (x1 - x0), y1 - f * (y1 - y0))
-    };
-    for gy in [y0, (y0 + y1) / 2.0, y1] {
-        bar(img, x0, gy, x1 - x0, 1.0, 0.0, muted, muted.scale(0.4));
-    }
-    let pts: Vec<Vec<(f32, f32)>> =
-        series.iter().zip(&ranges).map(|(s, r)| s.iter().map(|p| to_xy(*p, *r)).collect()).collect();
-    if let Some(first) = pts.first() {
-        fill_under(img, first, y1, colors[0], 0.15);
-    }
-    // Draw the first series last so it sits on top.
-    for (i, p) in pts.iter().enumerate().rev() {
-        polyline(img, p, colors[i], 3.0);
-    }
-
-    // Axis labels sit inside the plot so a larger plot doesn't push them off the round panel.
     let (px, pad) = (g.axis_px, g.axis_px * 0.25);
-    if let Some(unit) = shared_unit {
-        let (lo, hi) = ranges[0];
-        text_left(img, fonts.regular.as_ref(), &unit.format(hi), px, x0 + pad, y0 + px, muted);
-        text_left(img, fonts.regular.as_ref(), &unit.format(lo), px, x0 + pad, y1 - pad, muted);
+
+    // Per-series value range for each lane: the lane's unit auto-fit, or each metric's nominal range.
+    let lane_ranges: Vec<Vec<(f32, f32)>> = groups
+        .iter()
+        .map(|(unit, members)| match unit {
+            Some(u) => {
+                let r = fit_range(*u, members.iter().flat_map(|&i| series[i].iter().map(|p| p.1)));
+                vec![r; members.len()]
+            }
+            None => members.iter().map(|&i| metric(&metrics[i]).map_or((0.0, 100.0), |m| (m.min, m.max))).collect(),
+        })
+        .collect();
+    let lpx = px.min(lane_h * 0.42).max(11.0);
+    let two_labels = lane_h >= lpx * 2.2;
+    let lane_labels: Vec<Vec<String>> = groups
+        .iter()
+        .zip(&lane_ranges)
+        .map(|((unit, _), r)| match (unit, r.first()) {
+            (Some(u), Some(&(lo, hi))) if two_labels => vec![u.format(hi), u.format(lo)],
+            (Some(u), Some(&(lo, hi))) => vec![format!("{}–{}", u.format(lo), u.format(hi))],
+            _ => Vec::new(),
+        })
+        .collect();
+    // Lanes keep their axis labels in a left margin so they never sit on the data.
+    let gutter = if lanes {
+        let width = |t: &str| fonts.regular.as_ref().map_or(t.chars().count() as f32 * lpx * 0.6, |f| text_width(f, t, lpx));
+        lane_labels.iter().flatten().map(|t| width(t)).fold(0.0, f32::max) + pad * 2.0
+    } else {
+        0.0
+    };
+    let px0 = x0 + gutter;
+
+    for (lane, (_, members)) in groups.iter().enumerate() {
+        let ly0 = y0 + lane as f32 * (lane_h + gap);
+        let ly1 = ly0 + lane_h;
+        let ranges = &lane_ranges[lane];
+        let to_xy = |(i, v): (usize, f32), (lo, hi): (f32, f32)| {
+            // Newest sample at the right edge; the plot fills in from the right over HISTORY_LEN s.
+            let age = (len - 1 - i) as f32;
+            let f = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+            (x1 - age / (HISTORY_LEN - 1) as f32 * (x1 - px0), ly1 - f * (ly1 - ly0))
+        };
+        let grid: &[f32] = if lane_h >= 60.0 { &[ly0, (ly0 + ly1) / 2.0, ly1] } else { &[ly0, ly1] };
+        for &gy in grid {
+            bar(img, px0, gy, x1 - px0, 1.0, 0.0, muted, muted.scale(0.4));
+        }
+        let pts: Vec<Vec<(f32, f32)>> =
+            members.iter().zip(ranges).map(|(&i, r)| series[i].iter().map(|p| to_xy(*p, *r)).collect()).collect();
+        if let Some(first) = pts.first() {
+            fill_under(img, first, ly1, colors[members[0]], 0.15);
+        }
+        // Draw each lane's first series last so it sits on top.
+        for (p, &i) in pts.iter().zip(members).rev() {
+            polyline(img, p, colors[i], 3.0);
+        }
+
+        // Axis labels: in the margin with lanes, otherwise inside the plot so a larger plot
+        // doesn't push them off the round panel.
+        let labels = &lane_labels[lane];
+        let font = fonts.regular.as_ref();
+        let (top, bottom) = (ly0 + lpx * 0.8, ly1);
+        match (labels.as_slice(), lanes) {
+            ([hi, lo], true) => {
+                text_right(img, font, hi, lpx, px0 - pad, top, muted);
+                text_right(img, font, lo, lpx, px0 - pad, bottom, muted);
+            }
+            ([one], true) => text_right(img, font, one, lpx, px0 - pad, (ly0 + ly1) / 2.0 + lpx * 0.35, muted),
+            ([hi, lo], false) => {
+                text_left(img, font, hi, px, x0 + pad, ly0 + px, muted);
+                text_left(img, font, lo, px, x0 + pad, ly1 - pad, muted);
+            }
+            _ => {}
+        }
     }
     text_right(img, fonts.regular.as_ref(), "3 min", px, x1 - pad, y1 - pad, muted);
+}
+
+/// Auto-fitted axis range for one unit's values, padded and never narrower than a
+/// readable span. Empty input gives a default span from zero.
+fn fit_range(unit: Unit, values: impl Iterator<Item = f32>) -> (f32, f32) {
+    let (lo, hi) = values.fold((f32::MAX, f32::MIN), |(a, b), v| (a.min(v), b.max(v)));
+    let (min_span, pad) = match unit {
+        Unit::Celsius | Unit::Percent => (10.0, 2.0),
+        Unit::Rpm => (200.0, 50.0),
+        Unit::Watts => (20.0, 5.0),
+    };
+    let (mut lo, mut hi) = if lo > hi { (0.0, min_span) } else { (lo.floor() - pad, hi.ceil() + pad) };
+    if unit != Unit::Celsius {
+        lo = lo.max(0.0);
+    }
+    if unit == Unit::Percent {
+        hi = hi.min(100.0);
+    }
+    if hi - lo < min_span {
+        hi = lo + min_span;
+    }
+    (lo, hi)
 }
 
 fn blend(img: &mut RgbImage, x: i32, y: i32, c: Rgb, a: f32) {

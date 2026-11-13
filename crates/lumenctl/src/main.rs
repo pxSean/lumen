@@ -118,9 +118,12 @@ enum Cmd {
         /// Graph: plot size, 0.6 to 1.5.
         #[arg(long)]
         scale: Option<f32>,
+        /// Graph: one lane per unit (°C, %, W, rpm), each with its own axis: on or off.
+        #[arg(long, value_parser = parse_on_off)]
+        lanes: Option<bool>,
         #[arg(long)]
         rename: Option<String>,
-        #[arg(long, conflicts_with_all = ["style", "metrics", "outer", "inner", "footer", "scale", "rename"])]
+        #[arg(long, conflicts_with_all = ["style", "metrics", "outer", "inner", "footer", "scale", "lanes", "rename"])]
         delete: bool,
     },
     /// List the metrics screens can show, with current values.
@@ -280,7 +283,7 @@ fn main() -> anyhow::Result<()> {
             let st = client.status()?;
             print_screens(&st.active.lcd);
         }
-        Cmd::Screen { name: Some(name), style, metrics, outer, inner, footer, scale, rename, delete } => {
+        Cmd::Screen { name: Some(name), style, metrics, outer, inner, footer, scale, lanes, rename, delete } => {
             let mut lcd = client.status()?.active.lcd;
             if delete {
                 let before = lcd.screens.len();
@@ -311,12 +314,15 @@ fn main() -> anyhow::Result<()> {
                 screen.style = Style::with_name(style, &screen.style).with_context(|| format!("unknown style '{style}'"))?;
             }
             match &mut screen.style {
-                Style::Graph { metrics: m, scale: sc } => {
+                Style::Graph { metrics: m, scale: sc, lanes: ln } => {
                     if let Some(v) = metrics {
                         *m = v;
                     }
                     if let Some(v) = scale {
                         *sc = v.clamp(lumen_ipc::GRAPH_SCALE_MIN, lumen_ipc::GRAPH_SCALE_MAX);
+                    }
+                    if let Some(v) = lanes {
+                        *ln = v;
                     }
                 }
                 Style::Bars { metrics: m } => {
@@ -336,7 +342,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
                 _ => {
-                    if metrics.is_some() || outer.is_some() || inner.is_some() || footer.is_some() || scale.is_some() {
+                    if metrics.is_some() || outer.is_some() || inner.is_some() || footer.is_some() || scale.is_some() || lanes.is_some() {
                         bail!("the '{}' style has no options", screen.style.name());
                     }
                 }
@@ -429,7 +435,9 @@ fn print_status(st: &Status) {
 
 fn describe_style(style: &Style) -> String {
     match style {
-        Style::Graph { metrics, scale } => format!("graph  {}  (size {scale:.1}×)", metrics.join(", ")),
+        Style::Graph { metrics, scale, lanes } => {
+            format!("graph  {}  (size {scale:.1}×{})", metrics.join(", "), if *lanes { ", lanes" } else { "" })
+        }
         Style::Bars { metrics } => format!("bars   {}", metrics.join(", ")),
         Style::Rings { outer, inner, footer } => format!(
             "rings  outer {outer}, inner {inner}{}",
@@ -461,5 +469,13 @@ fn describe_effect(e: &Effect) -> String {
         }
         Effect::Rainbow { speed } | Effect::Wave { speed } => format!("{} ×{speed}", e.name()),
         Effect::Off => "off".into(),
+    }
+}
+
+fn parse_on_off(s: &str) -> Result<bool, String> {
+    match s {
+        "on" | "true" | "yes" => Ok(true),
+        "off" | "false" | "no" => Ok(false),
+        _ => Err(format!("expected on or off, got '{s}'")),
     }
 }
