@@ -4,7 +4,7 @@ use lumen_ipc::{
     Client, Effect, FanSpec, LcdSpec, METRICS, Request, SHOW_CYCLE, SHOW_IMAGE, Screen, Status, Style, TempSource, format_metric,
 };
 
-/// Control lumend: lighting, fans and the AIO screen.
+/// Control lumen-icued: lighting, fans and the AIO screen.
 #[derive(Parser)]
 #[command(version)]
 struct Cli {

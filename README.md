@@ -19,10 +19,10 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 
 ## Pieces
 
-- `lumend` runs as a systemd user service and owns all the devices. It listens for commands on `$XDG_RUNTIME_DIR/lumen.sock`.
+- `lumen-icued` is the daemon. It runs as a systemd user service and owns all the devices. It listens for commands on `$XDG_RUNTIME_DIR/lumen.sock`.
 - `lumenctl` is the CLI: `lumenctl status`, `lumenctl light hub:fans wave`, `lumenctl fan pump 30:60 40:85 45:100`, `lumenctl lcd cycle --cycle coolant,rings,graph --interval 10`
 - **Bar widget** (`pxsean.lumen`, in its own repo: [omarchy-lumen](https://github.com/pxSean/omarchy-lumen)) sits in the right side of the Omarchy bar, shows a fan icon and the coolant temperature, and turns the urgent color during the coolant safety override. Left click opens a panel with temperatures, pump and fan speeds, and one-click buttons for profiles, AIO screen layouts and lighting presets. Right click opens the TUI.
-- `lumen` is the TUI. Launch it as **Lumen** from the app launcher; it opens as a floating Omarchy terminal.
+- `lumen-tui` is the TUI. Launch it as **Lumen** from the app launcher; it opens as a floating Omarchy terminal.
 
 Settings are saved to `~/.config/lumen/config.toml` on every change. Colors can be `#rrggbb`, `theme` (the active Omarchy theme's `keyboard.rgb`), or `theme:<name>` (any key in the theme's `colors.toml`). When you run `omarchy theme set`, the daemon picks up the new theme within a couple of seconds.
 
@@ -60,7 +60,7 @@ The most specific target wins: `ch<N>`, then `pump` or `fans`.
   <img src="docs/screens/clock.png" width="23%" alt="clock">
   <img src="docs/screens/bg-rings.png" width="23%" alt="rings over the Omarchy wallpaper">
 </p>
-<p align="center"><sub>Rendered with <code>lumend --preview</code> using sample data.</sub></p>
+<p align="center"><sub>Rendered with <code>lumen-icued --preview</code> using sample data.</sub></p>
 
 A *screen* is a style plus its options:
 
@@ -105,13 +105,24 @@ Animated GIF backgrounds redraw the layout on every frame, at up to 20fps; this 
 
 ## LCD previews
 
-`lumend --preview DIR` renders every layout to PNG using the current theme and sample data, without touching the device. The sample data is fixed-seed noise, so the graphs look like real readings and every run gives the same images.
+`lumen-icued --preview DIR` renders every layout to PNG using the current theme and sample data, without touching the device. The sample data is fixed-seed noise, so the graphs look like real readings and every run gives the same images.
 
 ## Install
+
+On Arch (including Omarchy), install the [`lumen-icue`](https://aur.archlinux.org/packages/lumen-icue) package from the AUR, then start the daemon:
+
+```
+yay -S lumen-icue
+systemctl --user enable --now lumen-icued
+```
+
+Or build it yourself into `~/.local/bin` (needs the Rust toolchain):
 
 ```
 ./install.sh   # release build → ~/.local/bin, systemd user unit, launcher entry, udev rule
 ```
+
+`install.sh` also moves a lumen 0.1 install over: it stops and removes the old `lumend` service and binaries. Your settings in `~/.config/lumen` carry over.
 
 Then add the bar widget:
 
@@ -124,12 +135,16 @@ omarchy plugin add https://github.com/pxSean/omarchy-lumen.git --enable
 If the LCD panel stops responding, first try a soft power cycle of the panel:
 
 ```
-systemctl --user stop lumend
+systemctl --user stop lumen-icued
 cargo run -p lumen-hid --example lcd_power_cycle
-systemctl --user start lumend
+systemctl --user start lumen-icued
 ```
 
 If that doesn't bring it back, the panel's controller is probably wedged. Its firmware keeps standby power, so a reboot won't reset it. Use Corsair's recommended fix: shut the machine down, unplug the power cable, hold the power button for at least 30 seconds to drain residual power, then plug it back in and boot.
+
+## Program names
+
+lumen 0.1 installed the daemon as `lumend` and the TUI as `lumen`. Unrelated AUR packages already use both names, so from 0.2 they're `lumen-icued` and `lumen-tui`. `lumenctl`, the socket and the config directory are unchanged.
 
 ## Credits
 

@@ -1,4 +1,4 @@
-//! Catalog of the metrics lumend collects. Screens refer to metrics by key.
+//! Catalog of the metrics lumen-icued collects. Screens refer to metrics by key.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unit {

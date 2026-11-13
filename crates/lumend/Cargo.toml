@@ -5,6 +5,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Installed as lumen-icued: the AUR already has an unrelated `lumend`.
+[[bin]]
+name = "lumen-icued"
+path = "src/main.rs"
+
 [dependencies]
 lumen-hid.workspace = true
 lumen-ipc.workspace = true

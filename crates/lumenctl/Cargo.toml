@@ -1,6 +1,6 @@
 [package]
 name = "lumenctl"
-description = "Command-line client for lumend"
+description = "Command-line client for lumen-icued"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

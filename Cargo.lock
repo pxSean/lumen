@@ -735,7 +735,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-hid"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "env_logger",
  "image",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "lumen-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "lumen-ipc",
@@ -765,7 +765,7 @@ dependencies = [
 
 [[package]]
 name = "lumenctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -776,7 +776,7 @@ dependencies = [
 
 [[package]]
 name = "lumend"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ab_glyph",
  "anyhow",

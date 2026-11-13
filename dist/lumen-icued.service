@@ -1,9 +1,10 @@
 [Unit]
 Description=lumen lighting, fan and AIO screen daemon
-Documentation=file://%h/Work/corsair/README.md
+Documentation=https://github.com/pxSean/lumen
 
 [Service]
-ExecStart=%h/.local/bin/lumend
+# install.sh rewrites this to ~/.local/bin for a per-user build.
+ExecStart=/usr/bin/lumen-icued
 ExecReload=/bin/kill -HUP $MAINPID
 # SIGTERM returns the hub to its onboard fan curve and the LCD to its firmware screen.
 KillSignal=SIGTERM

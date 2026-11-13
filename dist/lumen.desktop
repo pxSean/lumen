@@ -2,7 +2,7 @@
 Version=1.0
 Name=Lumen
 Comment=RGB lighting, fans and AIO screen
-Exec=xdg-terminal-exec --app-id=TUI.float -e lumen
+Exec=xdg-terminal-exec --app-id=TUI.float -e lumen-tui
 Terminal=false
 Type=Application
 Icon=preferences-desktop-color

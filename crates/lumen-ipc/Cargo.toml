@@ -1,6 +1,6 @@
 [package]
 name = "lumen-ipc"
-description = "Shared config model and Unix-socket protocol for lumend"
+description = "Shared config model and Unix-socket protocol for lumen-icued"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

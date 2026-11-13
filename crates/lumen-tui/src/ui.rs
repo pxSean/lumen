@@ -1,4 +1,4 @@
-//! Rendering. Colors come from the active Omarchy theme as reported by lumend.
+//! Rendering. Colors come from the active Omarchy theme as reported by lumen-icued.
 
 use lumen_ipc::{Effect, FanSpec, Status, Style as ScreenStyle, TempSource, format_metric, metric};
 use ratatui::Frame;
@@ -116,9 +116,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     );
 
     if st.is_none() {
-        let msg = app.error.as_deref().unwrap_or("connecting to lumend…");
+        let msg = app.error.as_deref().unwrap_or("connecting to lumen-icued…");
         f.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(p.red)).block(block("lumend", &p, true)),
+            Paragraph::new(msg).style(Style::default().fg(p.red)).block(block("lumen-icued", &p, true)),
             body,
         );
     } else {

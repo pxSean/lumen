@@ -1,4 +1,4 @@
-//! Shared types between `lumend`, `lumenctl` and `lumen-tui`.
+//! Shared types between `lumen-icued`, `lumenctl` and `lumen-tui`.
 //!
 //! The daemon listens on `$XDG_RUNTIME_DIR/lumen.sock`. Each request is one line of JSON
 //! ([`Request`]), answered by one line of JSON ([`Response`]).
@@ -126,7 +126,7 @@ impl Client {
     pub fn connect() -> anyhow::Result<Self> {
         let path = socket_path();
         let stream = UnixStream::connect(&path)
-            .with_context(|| format!("cannot connect to lumend at {} (is it running?)", path.display()))?;
+            .with_context(|| format!("cannot connect to lumen-icued at {} (is it running?)", path.display()))?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
         Ok(Self {
             reader: BufReader::new(stream.try_clone()?),
@@ -140,7 +140,7 @@ impl Client {
         self.writer.write_all(line.as_bytes())?;
         let mut resp = String::new();
         if self.reader.read_line(&mut resp)? == 0 {
-            bail!("lumend closed the connection");
+            bail!("lumen-icued closed the connection");
         }
         Ok(serde_json::from_str(&resp)?)
     }

@@ -1,12 +1,12 @@
 [package]
 name = "lumen-tui"
-description = "Terminal UI for lumend, themed from Omarchy"
+description = "Terminal UI for lumen-icued, themed from Omarchy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "lumen"
+name = "lumen-tui"
 path = "src/main.rs"
 
 [dependencies]

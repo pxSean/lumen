@@ -1,4 +1,4 @@
-//! TUI state and key handling. Every edit is sent to lumend immediately.
+//! TUI state and key handling. Every edit is sent to lumen-icued immediately.
 
 use std::time::{Duration, Instant};
 

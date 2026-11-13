@@ -13,7 +13,7 @@ use crate::theme::Theme;
 pub fn bind() -> anyhow::Result<UnixListener> {
     let path = lumen_ipc::socket_path();
     if UnixStream::connect(&path).is_ok() {
-        bail!("another lumend is already listening on {}", path.display());
+        bail!("another lumen-icued is already listening on {}", path.display());
     }
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path)?;
