@@ -91,6 +91,18 @@ Animated GIF backgrounds redraw the layout on every frame, at up to 20fps; this 
 ./install.sh   # release build → ~/.local/bin, systemd user unit, launcher entry, udev rule
 ```
 
+## Troubleshooting
+
+If the LCD panel stops responding, first try a soft power cycle of the panel:
+
+```
+systemctl --user stop lumend
+cargo run -p lumen-hid --example lcd_power_cycle
+systemctl --user start lumend
+```
+
+If that doesn't bring it back, the panel's controller is probably wedged. Its firmware keeps standby power, so a reboot won't reset it. Use Corsair's recommended fix: shut the machine down, unplug the power cable, hold the power button for at least 30 seconds to drain residual power, then plug it back in and boot.
+
 ## Credits
 
 The protocols come from [OpenLinkHub](https://github.com/jurkovic-nikola/OpenLinkHub) (GPL-3.0) and [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB) (GPL-2.0+). lumen is GPL-3.0-or-later.
