@@ -14,7 +14,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 
 - `lumend` runs as a systemd user service and owns all the devices. It listens for commands on `$XDG_RUNTIME_DIR/lumen.sock`.
 - `lumenctl` is the CLI: `lumenctl status`, `lumenctl light hub:fans wave`, `lumenctl fan pump 30:60 40:85 45:100`, `lumenctl lcd cycle --cycle coolant,rings,graph --interval 10`
-- **Bar widget** (`sfinkel.lumen`, in its own repo: [omarchy-lumen](https://github.com/pxSean/omarchy-lumen)) sits in the right side of the Omarchy bar, shows a fan icon and the coolant temperature, and turns the urgent color during the coolant safety override. Left click opens a panel with temperatures, pump and fan speeds, and one-click buttons for profiles, AIO screen layouts and lighting presets. Right click opens the TUI.
+- **Bar widget** (`pxsean.lumen`, in its own repo: [omarchy-lumen](https://github.com/pxSean/omarchy-lumen)) sits in the right side of the Omarchy bar, shows a fan icon and the coolant temperature, and turns the urgent color during the coolant safety override. Left click opens a panel with temperatures, pump and fan speeds, and one-click buttons for profiles, AIO screen layouts and lighting presets. Right click opens the TUI.
 - `lumen` is the TUI. Launch it as **Lumen** from the app launcher; it opens as a floating Omarchy terminal.
 
 Settings are saved to `~/.config/lumen/config.toml` on every change. Colors can be `#rrggbb`, `theme` (the active Omarchy theme's `keyboard.rgb`), or `theme:<name>` (any key in the theme's `colors.toml`). When you run `omarchy theme set`, the daemon picks up the new theme within a couple of seconds.
