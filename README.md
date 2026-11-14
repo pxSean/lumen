@@ -15,7 +15,7 @@ Lighting, fan and AIO-screen control for an Omarchy desktop. It replaces OpenRGB
 | iCUE LINK AIO LCD (TITAN 360) | 480×480 screen with named, configurable screens: graphs, bars and rings of any metrics, plus a coolant gauge, a pump-and-fans view and a clock. It can rotate through screens, show an image or GIF, or show the Corsair firmware screen. Any screen can sit on a background image, a GIF or your Omarchy wallpaper |
 | Corsair K70 LUX / K70 LUX RGB | Per-key backlight. The model is detected automatically, and the keyboards can be swapped while the daemon runs. On the red-only K70 LUX, effects set brightness rather than color |
 | Logitech G502 HERO | Logo and DPI-strip colors (HID++ 2.0, feature 0x8070) |
-| Sensors | CPU temperature from k10temp/coretemp and CPU load from `/proc/stat`. GPU readings come from NVIDIA through NVML (loaded at runtime), otherwise from the amdgpu card with the most VRAM, so a discrete GPU wins over integrated graphics. Coolant temperature comes from the AIO |
+| Sensors | CPU temperature from k10temp/coretemp and CPU load from `/proc/stat`. GPU readings come from NVIDIA's driver through NVML (loaded at runtime), or from the GPU driver's hwmon: amdgpu (temperature, load, power, VRAM), Intel `xe` (temperature, power) or `i915` (power), and nouveau (temperature, power). A discrete card wins over integrated graphics. An AMD integrated GPU beside another card reports as `igpu.*`. Intel integrated graphics expose no sensors, and Intel's drivers report no GPU load. Coolant temperature comes from the AIO |
 
 ## Pieces
 
