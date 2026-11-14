@@ -50,6 +50,8 @@ The most specific target wins: `ch<N>`, then `pump` or `fans`.
 
 ## LCD screens
 
+<p align="center"><img src="docs/photos/graph-lanes.jpg" width="560" alt="An iCUE LINK AIO pump head showing the graph screen with lanes on: CPU and GPU temperature share one lane, RAM has its own, over the Omarchy wallpaper"></p>
+
 <p align="center">
   <img src="docs/screens/coolant.png" width="23%" alt="coolant gauge">
   <img src="docs/screens/rings.png" width="23%" alt="CPU and GPU rings">
